@@ -1,0 +1,11 @@
+
+A simple but effective AVL tree library.
+
+Warning: sizeof(void *) == sizeof(long) is assumed.
+
+For the time being, please read the comments in the .h file.
+
+A more comprehensive README will follow.
+
+Please report any problems you may encounter to waltertross at gmail.
+
