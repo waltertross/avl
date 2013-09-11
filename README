@@ -1,11 +1,16 @@
 
 A simple but effective AVL tree library.
 
-Warning: sizeof(void *) == sizeof(long) is assumed.
+Warning:
+   a) sizeof(void *) == sizeof(long) is assumed, and
+   b) a single thread is assumed.
 
 For the time being, please read the comments in the .h file.
-
 A more comprehensive README will follow.
+
+For forward compatibility, do not use the avl_tree() and the *_f_*() functions.
+
+The current version is optimized for lookup speed (under certain conditions), not for space.
 
 Please report any problems you may encounter to waltertross at gmail.
 
