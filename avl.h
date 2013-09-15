@@ -2,7 +2,10 @@
  |                                                                            |
  |                                   avl.h                                    |
  |                                                                            |
+ |               A simple but effective AVL trees library in C,               |
  |             created by Walter Tross sometime before 1991-03-11             |
+ |                                                                            |
+ |                                  v 2.0.0                                   |
  |                                                                            |
  *----------------------------------------------------------------------------*/
 /*
@@ -30,81 +33,39 @@ ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 */
 
-/* A simple but effective AVL trees library in C.
- *
- * Warning: sizeof(void *) == sizeof(long) is assumed.
+/* WARNING:
+ *    a) sizeof(void *) == sizeof(long) is assumed
+ *    b) for threads, consider that these functions use global variables:
+ *       avl_*tree*(), avl_insert(), avl_remove*(),
+ *       avl_start*(), avl_next(), avl_prev(), avl_stop().
  */
 
 #ifndef AVL_H
 #define AVL_H
 
-#define AVL_AVAILABLE (sizeof(void *) == sizeof(long))
-
 #include <stddef.h>
 #include <stdbool.h>
 
-/* Begin internal data structures - not for normal access.
- * All you should normally need is TREE * (like FILE *).
- */
-union avl_key {
-   void *ptr;
-   long  val;
-};
+typedef struct avl_tree TREE;
 
-struct avl_node {
-   union  avl_key   key;
-   void            *data;
-   struct avl_node *left;
-   struct avl_node *right;
-   int              bal;
-};
+//      AVL_USR is guaranteed to be 0
+#define AVL_USR      0
+#define AVL_MBR    ( 1 << 1)
+#define AVL_CHARS  ( 2 << 1)
+#define AVL_PTR    ( 3 << 1)
+#define AVL_STR    ( 4 << 1)
+#define AVL_LONG   ( 5 << 1)
+#define AVL_INT    ( 6 << 1)
+#define AVL_SHORT  ( 7 << 1)
+#define AVL_SCHAR  ( 8 << 1)
+#define AVL_ULONG  ( 9 << 1)
+#define AVL_UINT   (10 << 1)
+#define AVL_USHORT (11 << 1)
+#define AVL_UCHAR  (12 << 1)
 
-#define AVL_MAX_PATHDEPTH (sizeof(long) * 8 * 3 / 2 - 2)
-
-struct avl_path {
-   struct avl_node **pathnode;
-   char             *pathright;
-   struct avl_node  *node [AVL_MAX_PATHDEPTH + 2];
-   char              right[AVL_MAX_PATHDEPTH + 2];
-};
-
-typedef struct avl_tree {
-   struct avl_node *root;
-   struct avl_path *path;
-   long             nodes;
-   int            (*usrcmp)();
-   unsigned short   keyinfo;
-   unsigned short   keyoffs;
-} TREE;
-
-/* End internal data structures. */
-
-#define AVL_USR  (0 << 1)
-#define AVL_MBR  (1 << 1)
-#define AVL_PTR  (2 << 1)
-#define AVL_STR  (3 << 1)
-#define AVL_CHA  (4 << 1)
-#define AVL_LNG  (5 << 1)
-#define AVL_INT  (6 << 1)
-#define AVL_SHT  (7 << 1)
-#define AVL_SCH  (8 << 1)
-#define AVL_ULN  (9 << 1)
-#define AVL_UIN (10 << 1)
-#define AVL_USH (11 << 1)
-#define AVL_UCH (12 << 1)
-
-#define AVL_CHARS  AVL_CHA
-#define AVL_LONG   AVL_LNG
-#define AVL_SHORT  AVL_SHT
-#define AVL_SCHAR  AVL_SCH
-#define AVL_ULONG  AVL_ULN
-#define AVL_UINT   AVL_UIN
-#define AVL_USHORT AVL_USH
-#define AVL_UCHAR  AVL_UCH
-
-#define AVL_DUP 1
-
-#define AVL_AVLCMP ((int(*)())0)
+//      AVL_NODUP is guaranteed to be 0
+#define AVL_NODUP 0
+#define AVL_DUP   1
 
 /* Tree creation macros (to be used like functions).
  * Nodup trees don't allow duplicate keys, dup trees do (conserving insertion order).
@@ -113,44 +74,44 @@ typedef struct avl_tree {
  * - avl_tree_[no]dup     : the pointers to the data structs
  * - avl_tree_[no]dup_mbr : the pointers to the given members of the data structs
  * - avl_tree_[no]dup_ptr : the contents of the given pointer members of the data structs
- * avl_tree_[no]dup_str   is equivalent to avl_tree_nodup_ptr with strcmp as comparator.
  * avl_tree_[no]dup_chars is equivalent to avl_tree_nodup_mbr with strcmp as comparator.
+ * avl_tree_[no]dup_str   is equivalent to avl_tree_nodup_ptr with strcmp as comparator.
  * avl_tree_[no]dup_T with T a numeric type is essentially equivalent to avl_tree_nodup_mbr
  * with a comparator that returns the signed difference of the two members (n1 - n2).
  * NULL is returned if sizeof(void *) != sizeof(long), or if memory allocation failed.
  */
-#define avl_tree_nodup(usrcmp)                         avl_tree(AVL_USR, 0,                         (usrcmp))
-#define avl_tree_nodup_mbr(   _struct, member, usrcmp) avl_tree(AVL_MBR, offsetof(_struct, member), (usrcmp))
-#define avl_tree_nodup_ptr(   _struct, member, usrcmp) avl_tree(AVL_PTR, offsetof(_struct, member), (usrcmp))
-#define avl_tree_nodup_str(   _struct, member)         avl_tree(AVL_STR, offsetof(_struct, member), AVL_AVLCMP)
-#define avl_tree_nodup_chars( _struct, member)         avl_tree(AVL_CHA, offsetof(_struct, member), AVL_AVLCMP)
-#define avl_tree_nodup_long(  _struct, member)         avl_tree(AVL_LNG, offsetof(_struct, member), AVL_AVLCMP)
-#define avl_tree_nodup_int(   _struct, member)         avl_tree(AVL_INT, offsetof(_struct, member), AVL_AVLCMP)
-#define avl_tree_nodup_short( _struct, member)         avl_tree(AVL_SHT, offsetof(_struct, member), AVL_AVLCMP)
-#define avl_tree_nodup_schar( _struct, member)         avl_tree(AVL_SCH, offsetof(_struct, member), AVL_AVLCMP)
-#define avl_tree_nodup_ulong( _struct, member)         avl_tree(AVL_ULN, offsetof(_struct, member), AVL_AVLCMP)
-#define avl_tree_nodup_uint(  _struct, member)         avl_tree(AVL_UIN, offsetof(_struct, member), AVL_AVLCMP)
-#define avl_tree_nodup_ushort(_struct, member)         avl_tree(AVL_USH, offsetof(_struct, member), AVL_AVLCMP)
-#define avl_tree_nodup_uchar( _struct, member)         avl_tree(AVL_UCH, offsetof(_struct, member), AVL_AVLCMP)
+#define avl_tree_nodup(usrcmp)                         avl_tree(0,          0,                         (usrcmp))
+#define avl_tree_nodup_mbr(   _struct, member, usrcmp) avl_tree(AVL_MBR,    offsetof(_struct, member), (usrcmp))
+#define avl_tree_nodup_chars( _struct, member)         avl_tree(AVL_CHARS,  offsetof(_struct, member), NULL)
+#define avl_tree_nodup_ptr(   _struct, member, usrcmp) avl_tree(AVL_PTR,    offsetof(_struct, member), (usrcmp))
+#define avl_tree_nodup_str(   _struct, member)         avl_tree(AVL_STR,    offsetof(_struct, member), NULL)
+#define avl_tree_nodup_long(  _struct, member)         avl_tree(AVL_LONG,   offsetof(_struct, member), NULL)
+#define avl_tree_nodup_int(   _struct, member)         avl_tree(AVL_INT,    offsetof(_struct, member), NULL)
+#define avl_tree_nodup_short( _struct, member)         avl_tree(AVL_SHORT,  offsetof(_struct, member), NULL)
+#define avl_tree_nodup_schar( _struct, member)         avl_tree(AVL_SCHAR,  offsetof(_struct, member), NULL)
+#define avl_tree_nodup_ulong( _struct, member)         avl_tree(AVL_ULONG,  offsetof(_struct, member), NULL)
+#define avl_tree_nodup_uint(  _struct, member)         avl_tree(AVL_UINT,   offsetof(_struct, member), NULL)
+#define avl_tree_nodup_ushort(_struct, member)         avl_tree(AVL_USHORT, offsetof(_struct, member), NULL)
+#define avl_tree_nodup_uchar( _struct, member)         avl_tree(AVL_UCHAR,  offsetof(_struct, member), NULL)
 
-#define avl_tree_dup(usrcmp)                         avl_tree(AVL_USR|AVL_DUP, 0,                         (usrcmp))
-#define avl_tree_dup_mbr(   _struct, member, usrcmp) avl_tree(AVL_MBR|AVL_DUP, offsetof(_struct, member), (usrcmp))
-#define avl_tree_dup_ptr(   _struct, member, usrcmp) avl_tree(AVL_PTR|AVL_DUP, offsetof(_struct, member), (usrcmp))
-#define avl_tree_dup_str(   _struct, member)         avl_tree(AVL_STR|AVL_DUP, offsetof(_struct, member), AVL_AVLCMP)
-#define avl_tree_dup_chars( _struct, member)         avl_tree(AVL_CHA|AVL_DUP, offsetof(_struct, member), AVL_AVLCMP)
-#define avl_tree_dup_long(  _struct, member)         avl_tree(AVL_LNG|AVL_DUP, offsetof(_struct, member), AVL_AVLCMP)
-#define avl_tree_dup_int(   _struct, member)         avl_tree(AVL_INT|AVL_DUP, offsetof(_struct, member), AVL_AVLCMP)
-#define avl_tree_dup_short( _struct, member)         avl_tree(AVL_SHT|AVL_DUP, offsetof(_struct, member), AVL_AVLCMP)
-#define avl_tree_dup_schar( _struct, member)         avl_tree(AVL_SCH|AVL_DUP, offsetof(_struct, member), AVL_AVLCMP)
-#define avl_tree_dup_ulong( _struct, member)         avl_tree(AVL_ULN|AVL_DUP, offsetof(_struct, member), AVL_AVLCMP)
-#define avl_tree_dup_uint(  _struct, member)         avl_tree(AVL_UIN|AVL_DUP, offsetof(_struct, member), AVL_AVLCMP)
-#define avl_tree_dup_ushort(_struct, member)         avl_tree(AVL_USH|AVL_DUP, offsetof(_struct, member), AVL_AVLCMP)
-#define avl_tree_dup_uchar( _struct, member)         avl_tree(AVL_UCH|AVL_DUP, offsetof(_struct, member), AVL_AVLCMP)
+#define avl_tree_dup(usrcmp)                         avl_tree(           AVL_DUP, 0,                         (usrcmp))
+#define avl_tree_dup_mbr(   _struct, member, usrcmp) avl_tree(AVL_MBR   |AVL_DUP, offsetof(_struct, member), (usrcmp))
+#define avl_tree_dup_chars( _struct, member)         avl_tree(AVL_CHARS |AVL_DUP, offsetof(_struct, member), NULL)
+#define avl_tree_dup_ptr(   _struct, member, usrcmp) avl_tree(AVL_PTR   |AVL_DUP, offsetof(_struct, member), (usrcmp))
+#define avl_tree_dup_str(   _struct, member)         avl_tree(AVL_STR   |AVL_DUP, offsetof(_struct, member), NULL)
+#define avl_tree_dup_long(  _struct, member)         avl_tree(AVL_LONG  |AVL_DUP, offsetof(_struct, member), NULL)
+#define avl_tree_dup_int(   _struct, member)         avl_tree(AVL_INT   |AVL_DUP, offsetof(_struct, member), NULL)
+#define avl_tree_dup_short( _struct, member)         avl_tree(AVL_SHORT |AVL_DUP, offsetof(_struct, member), NULL)
+#define avl_tree_dup_schar( _struct, member)         avl_tree(AVL_SCHAR |AVL_DUP, offsetof(_struct, member), NULL)
+#define avl_tree_dup_ulong( _struct, member)         avl_tree(AVL_ULONG |AVL_DUP, offsetof(_struct, member), NULL)
+#define avl_tree_dup_uint(  _struct, member)         avl_tree(AVL_UINT  |AVL_DUP, offsetof(_struct, member), NULL)
+#define avl_tree_dup_ushort(_struct, member)         avl_tree(AVL_USHORT|AVL_DUP, offsetof(_struct, member), NULL)
+#define avl_tree_dup_uchar( _struct, member)         avl_tree(AVL_UCHAR |AVL_DUP, offsetof(_struct, member), NULL)
 
 /* String trees store strings instead of structs.
  */
-#define avl_string_tree_nodup() avl_tree(AVL_CHARS,         0, AVL_AVLCMP);
-#define avl_string_tree_dup()   avl_tree(AVL_CHARS|AVL_DUP, 0, AVL_AVLCMP);
+#define avl_string_tree_nodup() avl_tree(AVL_CHARS,         0, NULL);
+#define avl_string_tree_dup()   avl_tree(AVL_CHARS|AVL_DUP, 0, NULL);
 
 /* It is suggested to use the avl_tree_[no]dup[_TYPE]() macros instead of avl_tree(),
  * unless the tree type has to be parametrized.
@@ -168,82 +129,194 @@ bool avl_insert(TREE *tree, void *data);
 
 /* Remove a the (first) node with the given key from the tree (data is untouched).
  * The pointer to the data is returned, or NULL if the key was not found.
+ * The functions with pointer keys are interchangeable, and so are those with integer keys.
+ * E.g., you can avl_remove(tree, "abc") instead of avl_remove_str(tree, "abc").
  */
-#define avl_remove(tree, key)  avl_f_remove((tree), (long)(key))
+void *avl_remove       (TREE *tree, void *key);
+void *avl_remove_mbr   (TREE *tree, void *key);
+void *avl_remove_chars (TREE *tree, char *key);
+void *avl_remove_ptr   (TREE *tree, void *key);
+void *avl_remove_str   (TREE *tree, char *key);
+void *avl_remove_long  (TREE *tree, long           key);
+void *avl_remove_int   (TREE *tree, int            key);
+void *avl_remove_short (TREE *tree, short          key);
+void *avl_remove_schar (TREE *tree, signed char    key);
+void *avl_remove_ulong (TREE *tree, unsigned long  key);
+void *avl_remove_uint  (TREE *tree, unsigned int   key);
+void *avl_remove_ushort(TREE *tree, unsigned short key);
+void *avl_remove_uchar (TREE *tree, unsigned char  key);
 
 /* Locate a key in the tree (the first/leftmost key in case of a tree with duplicates),
  * returning the pointer to the data, or NULL if not found.
- * Use this function before an avl_insert that can easily fail, because it is faster.
+ * Use these function before an avl_insert that can easily fail, because it is faster.
+ * The functions with pointer keys are interchangeable, and so are those with integer keys.
+ * E.g., you can avl_locate(tree, "abc") instead of avl_locate_str(tree, "abc").
  */
-#define avl_locate(tree, key)  avl_f_locate((tree), (long)(key))
+void *avl_locate       (TREE *tree, void *key);
+void *avl_locate_mbr   (TREE *tree, void *key);
+void *avl_locate_chars (TREE *tree, char *key);
+void *avl_locate_ptr   (TREE *tree, void *key);
+void *avl_locate_str   (TREE *tree, char *key);
+void *avl_locate_long  (TREE *tree, long           key);
+void *avl_locate_int   (TREE *tree, int            key);
+void *avl_locate_short (TREE *tree, short          key);
+void *avl_locate_schar (TREE *tree, signed char    key);
+void *avl_locate_ulong (TREE *tree, unsigned long  key);
+void *avl_locate_uint  (TREE *tree, unsigned int   key);
+void *avl_locate_ushort(TREE *tree, unsigned short key);
+void *avl_locate_uchar (TREE *tree, unsigned char  key);
 
 /* Locate the first key that is >=, >, <= or < the given one,
  * returning the pointer to the data, or NULL if not found.
  * First means the leftmost for >= and >, and the rightmost for <= and <.
+ * The functions with pointer keys are interchangeable, and so are those with value keys.
+ * E.g., you can avl_locate_gt(tree, "abc") instead of avl_locate_gt_str(tree, "abc").
  */
-#define avl_locate_ge(tree, key)  avl_f_locate_ge((tree), (long)(key))
-#define avl_locate_gt(tree, key)  avl_f_locate_gt((tree), (long)(key))
-#define avl_locate_le(tree, key)  avl_f_locate_le((tree), (long)(key))
-#define avl_locate_lt(tree, key)  avl_f_locate_lt((tree), (long)(key))
+void *avl_locate_ge       (TREE *tree, void *key);
+void *avl_locate_gt       (TREE *tree, void *key);
+void *avl_locate_le       (TREE *tree, void *key);
+void *avl_locate_lt       (TREE *tree, void *key);
+void *avl_locate_ge_mbr   (TREE *tree, void *key);
+void *avl_locate_gt_mbr   (TREE *tree, void *key);
+void *avl_locate_le_mbr   (TREE *tree, void *key);
+void *avl_locate_lt_mbr   (TREE *tree, void *key);
+void *avl_locate_ge_chars (TREE *tree, char *key);
+void *avl_locate_gt_chars (TREE *tree, char *key);
+void *avl_locate_le_chars (TREE *tree, char *key);
+void *avl_locate_lt_chars (TREE *tree, char *key);
+void *avl_locate_ge_ptr   (TREE *tree, void *key);
+void *avl_locate_gt_ptr   (TREE *tree, void *key);
+void *avl_locate_le_ptr   (TREE *tree, void *key);
+void *avl_locate_lt_ptr   (TREE *tree, void *key);
+void *avl_locate_ge_str   (TREE *tree, char *key);
+void *avl_locate_gt_str   (TREE *tree, char *key);
+void *avl_locate_le_str   (TREE *tree, char *key);
+void *avl_locate_lt_str   (TREE *tree, char *key);
+void *avl_locate_ge_long  (TREE *tree, long           key);
+void *avl_locate_gt_long  (TREE *tree, long           key);
+void *avl_locate_le_long  (TREE *tree, long           key);
+void *avl_locate_lt_long  (TREE *tree, long           key);
+void *avl_locate_ge_int   (TREE *tree, int            key);
+void *avl_locate_gt_int   (TREE *tree, int            key);
+void *avl_locate_le_int   (TREE *tree, int            key);
+void *avl_locate_lt_int   (TREE *tree, int            key);
+void *avl_locate_ge_short (TREE *tree, short          key);
+void *avl_locate_gt_short (TREE *tree, short          key);
+void *avl_locate_le_short (TREE *tree, short          key);
+void *avl_locate_lt_short (TREE *tree, short          key);
+void *avl_locate_ge_schar (TREE *tree, signed char    key);
+void *avl_locate_gt_schar (TREE *tree, signed char    key);
+void *avl_locate_le_schar (TREE *tree, signed char    key);
+void *avl_locate_lt_schar (TREE *tree, signed char    key);
+void *avl_locate_ge_ulong (TREE *tree, unsigned long  key);
+void *avl_locate_gt_ulong (TREE *tree, unsigned long  key);
+void *avl_locate_le_ulong (TREE *tree, unsigned long  key);
+void *avl_locate_lt_ulong (TREE *tree, unsigned long  key);
+void *avl_locate_ge_uint  (TREE *tree, unsigned int   key);
+void *avl_locate_gt_uint  (TREE *tree, unsigned int   key);
+void *avl_locate_le_uint  (TREE *tree, unsigned int   key);
+void *avl_locate_lt_uint  (TREE *tree, unsigned int   key);
+void *avl_locate_ge_ushort(TREE *tree, unsigned short key);
+void *avl_locate_gt_ushort(TREE *tree, unsigned short key);
+void *avl_locate_le_ushort(TREE *tree, unsigned short key);
+void *avl_locate_lt_ushort(TREE *tree, unsigned short key);
+void *avl_locate_ge_uchar (TREE *tree, unsigned char  key);
+void *avl_locate_gt_uchar (TREE *tree, unsigned char  key);
+void *avl_locate_le_uchar (TREE *tree, unsigned char  key);
+void *avl_locate_lt_uchar (TREE *tree, unsigned char  key);
 
 /* Locate the first/last (leftmost/rightmost) node of the tree (NULL if not found).
  */
 void *avl_locate_first(TREE *tree);
 void *avl_locate_last (TREE *tree);
 
-/* Scan a tree [backwards] passing all data pointers to a function.
+/* Scan a tree [backwards] passing all data pointers to a callback function,
+ * which may return true to stop the scan and return the current data pointer.
+ * If the callback never returns true, a full scan is made and NULL is returned.
  * The tree may not be altered during the scan.
  */
-#define avl_scan(    tree, usrfun)  avl_f_scan((tree), (usrfun), false)
-#define avl_backscan(tree, usrfun)  avl_f_scan((tree), (usrfun), true )
+void *avl_scan    (TREE *tree, bool (*callback)());
+void *avl_backscan(TREE *tree, bool (*callback)());
 
-/* Begin macros and functions for scanning trees without callback functions.
+/* Like avl_[back]scan(), but passing a context pointer as a second argument to the callback function.
+ */
+void *avl_walk    (TREE *tree, bool (*callback)(), void *context);
+void *avl_backwalk(TREE *tree, bool (*callback)(), void *context);
+
+/* BEGIN Macros and functions for traversing trees without callback functions.
  * E.g.: for (data *p = avl_first(tree); p; p = avl_next(tree)) { ... }
  * (you may find it convenient to enclose this for(...) in a macro, with or without the type of *p).
  * A structure is allocated to keep track of the path to the current node in the tree.
- * Any change to the tree deallocates the path, thus interrupting the scan.
+ * Any change to the tree deallocates the path, thus interrupting the traversal.
  * The path is also deallocated any time NULL is returned because no matching node was found.
  */
 
-/* Start a tree scan from the leftmost/rightmost node (NULL if the tree is empty).
+/* Start a tree traversal from the leftmost/rightmost node (NULL if the tree is empty).
  */
 void *avl_first(TREE *tree);
 void *avl_last (TREE *tree);
 
-/* Start a tree scan from the leftmost/rightmost node with a given key (NULL if none matches).
+/* Start a tree traversal from the leftmost/rightmost node with a given key (NULL if none matches).
+ * The functions with pointer keys are interchangeable, and so are those with integer keys.
+ * E.g., you can avl_start(tree, "abc") instead of avl_start_str(tree, "abc").
  */
-#define avl_start(    tree, key)  avl_f_start((tree), (long)(key), false)
-#define avl_backstart(tree, key)  avl_f_start((tree), (long)(key), true )
+void *avl_start       (TREE *tree, void *key);
+void *avl_start_mbr   (TREE *tree, void *key);
+void *avl_start_chars (TREE *tree, char *key);
+void *avl_start_ptr   (TREE *tree, void *key);
+void *avl_start_str   (TREE *tree, char *key);
+void *avl_start_long  (TREE *tree, long           key);
+void *avl_start_int   (TREE *tree, int            key);
+void *avl_start_short (TREE *tree, short          key);
+void *avl_start_schar (TREE *tree, signed char    key);
+void *avl_start_ulong (TREE *tree, unsigned long  key);
+void *avl_start_uint  (TREE *tree, unsigned int   key);
+void *avl_start_ushort(TREE *tree, unsigned short key);
+void *avl_start_uchar (TREE *tree, unsigned char  key);
+void *avl_backstart       (TREE *tree, void *key);
+void *avl_backstart_mbr   (TREE *tree, void *key);
+void *avl_backstart_chars (TREE *tree, char *key);
+void *avl_backstart_ptr   (TREE *tree, void *key);
+void *avl_backstart_str   (TREE *tree, char *key);
+void *avl_backstart_long  (TREE *tree, long           key);
+void *avl_backstart_int   (TREE *tree, int            key);
+void *avl_backstart_short (TREE *tree, short          key);
+void *avl_backstart_schar (TREE *tree, signed char    key);
+void *avl_backstart_ulong (TREE *tree, unsigned long  key);
+void *avl_backstart_uint  (TREE *tree, unsigned int   key);
+void *avl_backstart_ushort(TREE *tree, unsigned short key);
+void *avl_backstart_uchar (TREE *tree, unsigned char  key);
 
 /* Advance to the next/previous node (NULL if there is none).
  */
 void *avl_next(TREE *tree);
 void *avl_prev(TREE *tree);
 
-/* Deallocate the path (not needed if the scan terminated because a NULL was returned).
+/* Deallocate the path (not needed if the traversal terminated because a NULL was returned).
  */
 void avl_stop(TREE *tree);
 
-/* End macros and functions for scanning trees without callback functions.
+/* END Macros and functions for traversing trees without callback functions.
  */
 
 /* Make a linked list out of the data in a tree by providing the "next"/"prev" pointer member,
  * returning the head of the list.
  */ 
-#define avl_link(    tree, _struct, next)  avl_f_link((tree), offsetof(_struct, next), false)
-#define avl_backlink(tree, _struct, prev)  avl_f_link((tree), offsetof(_struct, prev), true )
+#define avl_link(    tree, _struct, next)  avl_linked_list((tree), offsetof(_struct, next), false)
+#define avl_backlink(tree, _struct, prev)  avl_linked_list((tree), offsetof(_struct, prev), true )
+void *avl_linked_list(TREE *tree, size_t ptroffs, bool back);
 
 /* Return the number of nodes in a tree.
  */
-#define avl_nodes(tree) ((tree)->nodes)
+long avl_nodes(TREE *tree);
 
 /* Copy a tree (the structure and the nodes, but not the data nor the scan path).
  */
 TREE *avl_copy(TREE *tree);
 
-/* Empty a tree releasing all its data to a function (e.g., the free() function).
+/* Empty a tree releasing all its data to a callback function (e.g., the free() function).
  */
-void avl_release(TREE *tree, void (*usrfun)());
+void avl_release(TREE *tree, void (*callback)());
 
 /* Empty a tree (the data is untouched).
  */
@@ -253,17 +326,5 @@ void avl_reset(TREE *tree);
  */
 void avl_close(TREE *tree);
 
-/* These functions are not meant to be used directly,
- * the corresponding macros should be used instead.
- */
-void *avl_f_locate   (TREE *tree, long keyval);
-void *avl_f_locate_ge(TREE *tree, long keyval);
-void *avl_f_locate_gt(TREE *tree, long keyval);
-void *avl_f_locate_le(TREE *tree, long keyval);
-void *avl_f_locate_lt(TREE *tree, long keyval);
-void *avl_f_remove   (TREE *tree, long keyval);
-void  avl_f_scan (TREE *tree, void (*usrfun)(), bool back);
-void *avl_f_start(TREE *tree, long keyval,      bool back);
-void *avl_f_link (TREE *tree, size_t ptroffs,   bool back);
 
 #endif

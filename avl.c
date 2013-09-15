@@ -2,7 +2,10 @@
  |                                                                            |
  |                                   avl.c                                    |
  |                                                                            |
+ |               A simple but effective AVL trees library in C,               |
  |             created by Walter Tross sometime before 1991-03-11             |
+ |                                                                            |
+ |                                  v 2.0.0                                   |
  |                                                                            |
  *----------------------------------------------------------------------------*/
 /*
@@ -45,39 +48,79 @@ typedef unsigned short USHORT;
 typedef unsigned char  UCHAR;
 typedef   signed char  SCHAR;
 
+typedef int (*CMPFUN)(void *, void *);
+
+typedef union avl_key {
+   void *ptr;
+   long  val;
+} KEY;
+
 typedef struct avl_node NODE;
-typedef struct avl_path PATH;
+struct avl_node {
+   KEY   key;
+   void *data;
+   NODE *left;
+   NODE *right;
+   int   bal;
+};
 
-#define USR_KEY  (AVL_USR >> 1)
-#define MBR_KEY  (AVL_MBR >> 1)
-#define PTR_KEY  (AVL_PTR >> 1)
-#define STR_KEY  (AVL_STR >> 1)
-#define CHA_KEY  (AVL_CHA >> 1)
-#define LNG_KEY  (AVL_LNG >> 1)
-#define INT_KEY  (AVL_INT >> 1)
-#define SHT_KEY  (AVL_SHT >> 1)
-#define SCH_KEY  (AVL_SCH >> 1)
-#define ULN_KEY  (AVL_ULN >> 1)
-#define UIN_KEY  (AVL_UIN >> 1)
-#define USH_KEY  (AVL_USH >> 1)
-#define UCH_KEY  (AVL_UCH >> 1)
+#define AVL_MAX_PATHDEPTH (sizeof(long) * 8 * 3 / 2 - 2)
 
-#define USR_CMP  0
-#define STR_CMP  1
-#define VAL_CMP  2
-#define COR_CMP  3
+typedef struct avl_path {
+   NODE **pathnode;
+   char  *pathright;
+   NODE  *node [AVL_MAX_PATHDEPTH + 2];
+   char   right[AVL_MAX_PATHDEPTH + 2];
+} PATH;
+
+struct avl_tree {
+   NODE  *root;
+   PATH  *path;
+   long   nodes;
+   CMPFUN usrcmp;
+   USHORT keyinfo;
+   USHORT keyoffs;
+};
+
+#define AVL_CHA AVL_CHARS
+#define AVL_LNG AVL_LONG
+#define AVL_SHT AVL_SHORT
+#define AVL_SCH AVL_SCHAR
+#define AVL_ULN AVL_ULONG
+#define AVL_UIN AVL_UINT
+#define AVL_USH AVL_USHORT
+#define AVL_UCH AVL_UCHAR
+
+#define USR_KEY (AVL_USR >> 1)
+#define MBR_KEY (AVL_MBR >> 1)
+#define CHA_KEY (AVL_CHA >> 1)
+#define PTR_KEY (AVL_PTR >> 1)
+#define STR_KEY (AVL_STR >> 1)
+#define LNG_KEY (AVL_LNG >> 1)
+#define INT_KEY (AVL_INT >> 1)
+#define SHT_KEY (AVL_SHT >> 1)
+#define SCH_KEY (AVL_SCH >> 1)
+#define ULN_KEY (AVL_ULN >> 1)
+#define UIN_KEY (AVL_UIN >> 1)
+#define USH_KEY (AVL_USH >> 1)
+#define UCH_KEY (AVL_UCH >> 1)
+
+#define USR_CMP 0
+#define STR_CMP 1
+#define VAL_CMP 2
+#define COR_CMP 3
 
 #define NODUP 0
 #define DUP   1
 
-#define USR_NODUP  (USR_CMP | NODUP << 2)
-#define STR_NODUP  (STR_CMP | NODUP << 2)
-#define VAL_NODUP  (VAL_CMP | NODUP << 2)
-#define COR_NODUP  (COR_CMP | NODUP << 2)
-#define USR_DUP    (USR_CMP | DUP   << 2)
-#define STR_DUP    (STR_CMP | DUP   << 2)
-#define VAL_DUP    (VAL_CMP | DUP   << 2)
-#define COR_DUP    (COR_CMP | DUP   << 2)
+#define USR_NODUP (USR_CMP | NODUP << 2)
+#define STR_NODUP (STR_CMP | NODUP << 2)
+#define VAL_NODUP (VAL_CMP | NODUP << 2)
+#define COR_NODUP (COR_CMP | NODUP << 2)
+#define USR_DUP   (USR_CMP | DUP   << 2)
+#define STR_DUP   (STR_CMP | DUP   << 2)
+#define VAL_DUP   (VAL_CMP | DUP   << 2)
+#define COR_DUP   (COR_CMP | DUP   << 2)
 
 /* keyinfo: bits 6-3: KEYTYPE, bit 2: DUP, bits 1-0: CMPTYPE */
 /*          bits 6-2: TREETYPE,            bits 2-0: LOCTYPE */
@@ -89,7 +132,7 @@ typedef struct avl_path PATH;
 
 #define UINT_CLASH (sizeof(UINT) == sizeof(long))
 
-#define MINLONG   ((long)~(((ULONG)(~0L))>>1))
+#define MINLONG ((long)~(((ULONG)(~0L))>>1))
 
 #define CORRECT(u)       ((long)(u) + MINLONG)
 #define CORR_IF(u, cond) ((cond) ? CORRECT(u) : (long)(u))
@@ -99,18 +142,25 @@ typedef struct avl_path PATH;
             :    strcmp  ((char *)(ptr1), (char *)(ptr2)) \
 )
 
-#define BAL        0
-#define LEFT       1
-#define RIGHT      2
-#define LEFTUNBAL  3
-#define RIGHTUNBAL 4
+#define BAL   0
+#define LEFT  1
+#define RIGHT 2
 
-#define LESS       3
-#define SAME       4
+typedef enum avl_unbal {
+   LEFTUNBAL,
+   RIGHTUNBAL
+} UNBAL;
 
-#define NOTINS     0
-#define INS        1
-#define DEEPER     2
+typedef enum avl_depth {
+   LESS,
+   SAME
+} DEPTH;
+
+typedef enum avl_ins {
+   NOTINS,
+   INS,
+   DEEPER
+} INS_T;
 
 #define LONG_ALIGNED_SIZE(obj) ((sizeof(obj)+sizeof(long)-1)&~(sizeof(long)-1))
 
@@ -141,7 +191,7 @@ static void  *Free_List[N_FREE_LISTS]; /* init to 0 by C */
 static char  *Avail_Base = (char *)Prealloc;
 static size_t Avail_Size = PREALLOC_SIZE;
 
-/*===========================================================================*/
+/*---------------------------------------------------------------------------*/
 
 static void *get_memory(size_t sizeof_obj)
 {
@@ -190,21 +240,21 @@ static void *get_memory(size_t sizeof_obj)
 
 /*===========================================================================*/
 
-TREE *avl_tree(int treetype, size_t keyoffs, int (*usrcmp)(void *, void *))
+TREE *avl_tree(int treetype, size_t keyoffs, CMPFUN usrcmp)
 {
    TREE *tree;
    int   keyinfo;
 
-   if ( !AVL_AVAILABLE) {
+   if (sizeof(void *) != sizeof(long)) {
       return NULL;
    }
    keyinfo = treetype << 2;
    switch (treetype & ~AVL_DUP) {
    CASE AVL_USR: keyinfo |= USR_CMP;
    CASE AVL_MBR: keyinfo |= USR_CMP;
+   CASE AVL_CHA: keyinfo |= STR_CMP;
    CASE AVL_PTR: keyinfo |= USR_CMP;
    CASE AVL_STR: keyinfo |= STR_CMP;
-   CASE AVL_CHA: keyinfo |= STR_CMP;
    CASE AVL_LNG: keyinfo |= VAL_CMP;
    CASE AVL_INT: keyinfo |= VAL_CMP;
    CASE AVL_SHT: keyinfo |= VAL_CMP;
@@ -232,14 +282,13 @@ TREE *avl_tree(int treetype, size_t keyoffs, int (*usrcmp)(void *, void *))
 
 /*===========================================================================*/
 
-static int rebalance(NODE **rootaddr)
+static DEPTH rebalance(NODE **rootaddr, UNBAL unbal)
 {
    NODE *root = *rootaddr;
    NODE *newroot;
    NODE *half;
 
-   switch (root->bal) {
-   CASE LEFTUNBAL:
+   if (unbal == LEFTUNBAL) {
       switch (root->left->bal) {
       CASE LEFT: /* simple rotation, tree depth decreased */
          newroot = root->left;
@@ -281,7 +330,7 @@ static int rebalance(NODE **rootaddr)
          *rootaddr = newroot;
          return LESS;
       }
-   CASE RIGHTUNBAL:
+   } else {
       switch (root->right->bal) {
       CASE RIGHT: /* simple rotation, tree depth decreased */
          newroot = root->right;
@@ -323,8 +372,6 @@ static int rebalance(NODE **rootaddr)
          *rootaddr = newroot;
          return LESS;
       }
-   DEFAULT:
-      return SAME;
    }
    assert( !"balanced subtrees");
    return -1;
@@ -332,12 +379,11 @@ static int rebalance(NODE **rootaddr)
 
 /*===========================================================================*/
 
-static int insert_ptr(NODE **rootaddr,
-                      NODE *node, int (*usrcmp)(void *, void *), bool dup)
+static INS_T insert_ptr(NODE **rootaddr, NODE *node, CMPFUN usrcmp, bool dup)
 {
    NODE *root = *rootaddr;
-   int cmp;
-   int ins;
+   int   cmp;
+   INS_T ins;
 
    cmp = PTRCMP(usrcmp, node->key.ptr, root->key.ptr);
    if (cmp < 0) {
@@ -357,8 +403,7 @@ static int insert_ptr(NODE **rootaddr,
             root->bal = LEFT;
             return DEEPER;
          CASE LEFT:
-            root->bal = LEFTUNBAL;
-            return rebalance(rootaddr) == LESS ? INS : DEEPER;
+            return rebalance(rootaddr, LEFTUNBAL) == LESS ? INS : DEEPER;
          }
       CASE INS:
          return INS;
@@ -382,8 +427,7 @@ static int insert_ptr(NODE **rootaddr,
             root->bal = RIGHT;
             return DEEPER;
          CASE RIGHT:
-            root->bal = RIGHTUNBAL;
-            return rebalance(rootaddr) == LESS ? INS : DEEPER;
+            return rebalance(rootaddr, RIGHTUNBAL) == LESS ? INS : DEEPER;
          }
       CASE INS:
          return INS;
@@ -396,10 +440,10 @@ static int insert_ptr(NODE **rootaddr,
 
 /*---------------------------------------------------------------------------*/
 
-static int insert_val(NODE **rootaddr, NODE *node, bool dup)
+static INS_T insert_val(NODE **rootaddr, NODE *node, bool dup)
 {
    NODE *root = *rootaddr;
-   int ins;
+   INS_T ins;
 
    if (node->key.val < root->key.val) {
       if (root->left) {
@@ -418,8 +462,7 @@ static int insert_val(NODE **rootaddr, NODE *node, bool dup)
             root->bal = LEFT;
             return DEEPER;
          CASE LEFT:
-            root->bal = LEFTUNBAL;
-            return rebalance(rootaddr) == LESS ? INS : DEEPER;
+            return rebalance(rootaddr, LEFTUNBAL) == LESS ? INS : DEEPER;
          }
       CASE INS:
          return INS;
@@ -443,8 +486,7 @@ static int insert_val(NODE **rootaddr, NODE *node, bool dup)
             root->bal = RIGHT;
             return DEEPER;
          CASE RIGHT:
-            root->bal = RIGHTUNBAL;
-            return rebalance(rootaddr) == LESS ? INS : DEEPER;
+            return rebalance(rootaddr, RIGHTUNBAL) == LESS ? INS : DEEPER;
          }
       CASE INS:
          return INS;
@@ -461,7 +503,7 @@ bool avl_insert(TREE *tree, void *data)
 {
    NODE *node;
    int   keyinfo;
-   int   ins;
+   INS_T ins;
 
    ALLOC_NODE(node);
    if ( !node) {
@@ -476,9 +518,9 @@ bool avl_insert(TREE *tree, void *data)
    switch (KEYTYPE(keyinfo)) {
    CASE USR_KEY: node->key.ptr =          (void   *)((char *)data);
    CASE MBR_KEY: node->key.ptr =          (void   *)((char *)data + tree->keyoffs);
+   CASE CHA_KEY: node->key.ptr =          (void   *)((char *)data + tree->keyoffs);
    CASE PTR_KEY: node->key.ptr =         *(void  **)((char *)data + tree->keyoffs);
    CASE STR_KEY: node->key.ptr =         *(void  **)((char *)data + tree->keyoffs);
-   CASE CHA_KEY: node->key.ptr =          (void   *)((char *)data + tree->keyoffs);
    CASE LNG_KEY: node->key.val =         *(long   *)((char *)data + tree->keyoffs);
    CASE INT_KEY: node->key.val =         *(int    *)((char *)data + tree->keyoffs);
    CASE SHT_KEY: node->key.val =         *(short  *)((char *)data + tree->keyoffs);
@@ -494,11 +536,11 @@ bool avl_insert(TREE *tree, void *data)
    if (tree->root) {
       switch (LOCTYPE(keyinfo)) {
       CASE USR_NODUP: ins = insert_ptr(&tree->root, node, tree->usrcmp, NODUP);
-      CASE STR_NODUP: ins = insert_ptr(&tree->root, node, AVL_AVLCMP,   NODUP);
+      CASE STR_NODUP: ins = insert_ptr(&tree->root, node, NULL,         NODUP);
       CASE COR_NODUP:
       case VAL_NODUP: ins = insert_val(&tree->root, node,               NODUP);
       CASE USR_DUP:   ins = insert_ptr(&tree->root, node, tree->usrcmp, DUP);
-      CASE STR_DUP:   ins = insert_ptr(&tree->root, node, AVL_AVLCMP,   DUP);
+      CASE STR_DUP:   ins = insert_ptr(&tree->root, node, NULL,         DUP);
       CASE COR_DUP:
       case VAL_DUP:   ins = insert_val(&tree->root, node,               DUP);
       DEFAULT:        ins = NOTINS; assert( !"unexpected LOCTYPE");
@@ -508,7 +550,7 @@ bool avl_insert(TREE *tree, void *data)
          return false;
       }
    } else {
-     tree->root = node;
+      tree->root = node;
    }
    tree->nodes++;
    if (tree->path) {
@@ -517,6 +559,272 @@ bool avl_insert(TREE *tree, void *data)
    }
    return true;
 }
+
+/*===========================================================================*/
+
+static NODE *leftmost(NODE **rootaddr, DEPTH *depth)
+{
+   NODE *root = *rootaddr;
+   NODE *node;
+
+   if (root) {
+      if (root->left) {
+         node = leftmost(&root->left, depth);
+         if (*depth == LESS) {
+            /* left subtree depth decreased */
+            switch (root->bal) {
+            CASE LEFT:
+               root->bal = BAL;
+            CASE BAL:
+               root->bal = RIGHT;
+               *depth = SAME;
+            CASE RIGHT:
+               *depth = rebalance(rootaddr, RIGHTUNBAL);
+            }
+         }
+         return node;
+      } else {
+         *rootaddr = root->right;
+         *depth = LESS;
+         return root;
+      }
+   } else {
+      *depth = SAME;
+      return NULL;
+   }
+}
+
+/*---------------------------------------------------------------------------*/
+
+static NODE *remove_ptr(NODE **rootaddr, void *keyptr, CMPFUN usrcmp, bool dup, DEPTH *depth)
+{
+   NODE *root = *rootaddr;
+   NODE *node;
+   int   cmp;
+
+   cmp = PTRCMP(usrcmp, keyptr, root->key.ptr);
+   if (cmp < 0) {
+      if ( !root->left) {
+         return NULL;
+      }
+      node = remove_ptr(&root->left, keyptr, usrcmp, dup, depth);
+      if (node && *depth == LESS) {
+         /* left subtree depth decreased */
+         switch (root->bal) {
+         CASE LEFT:
+            root->bal = BAL;
+         CASE BAL:
+            root->bal = RIGHT;
+            *depth = SAME;
+         CASE RIGHT:
+            *depth = rebalance(rootaddr, RIGHTUNBAL);
+         }
+      }
+   } else if (cmp > 0) {
+      if ( !root->right) {
+         return NULL;
+      }
+      node = remove_ptr(&root->right, keyptr, usrcmp, dup, depth);
+      if (node && *depth == LESS) {
+         /* right subtree depth decreased */
+         switch (root->bal) {
+         CASE RIGHT:
+            root->bal = BAL;
+         CASE BAL:
+            root->bal = LEFT;
+            *depth = SAME;
+         CASE LEFT:
+            *depth = rebalance(rootaddr, LEFTUNBAL);
+         }
+      }
+   } else {
+      if (dup && root->left
+              && (node = remove_ptr(&root->left, keyptr, usrcmp, dup, depth))) {
+         if (*depth == LESS) {
+            /* left subtree depth decreased */
+            switch (root->bal) {
+            CASE LEFT:
+               root->bal = BAL;
+            CASE BAL:
+               root->bal = RIGHT;
+               *depth = SAME;
+            CASE RIGHT:
+               *depth = rebalance(rootaddr, RIGHTUNBAL);
+            }
+         }
+      } else {
+         node = root;
+         if ( !node->right) {
+            *rootaddr = node->left;
+            *depth = LESS;
+         } else if ( !node->left) {
+            *rootaddr = node->right;
+            *depth = LESS;
+         } else {
+            /* replace by the leftmost node of the right subtree */
+            root = leftmost(&node->right, depth);
+            root->left  = node->left;
+            root->right = node->right;
+            if (*depth == LESS) {
+               /* right subtree depth decreased */
+               switch (node->bal) {
+               CASE RIGHT:
+                  root->bal = BAL;
+               CASE BAL:
+                  root->bal = LEFT;
+                  *depth = SAME;
+               CASE LEFT:
+                  *depth = rebalance(&root, LEFTUNBAL);
+               }
+            } else {
+               root->bal = node->bal;
+               *depth = SAME;
+            }
+            *rootaddr = root;
+         }
+      }
+   }
+   return node;
+}
+
+/*---------------------------------------------------------------------------*/
+
+static NODE *remove_val(NODE **rootaddr, long keyval, bool dup, DEPTH *depth)
+{
+   NODE *root = *rootaddr;
+   NODE *node;
+
+   if (keyval < root->key.val) {
+      if ( !root->left) {
+         return NULL;
+      }
+      node = remove_val(&root->left, keyval, dup, depth);
+      if (node && *depth == LESS) {
+         /* left subtree depth decreased */
+         switch (root->bal) {
+         CASE LEFT:
+            root->bal = BAL;
+         CASE BAL:
+            root->bal = RIGHT;
+            *depth = SAME;
+         CASE RIGHT:
+            *depth = rebalance(rootaddr, RIGHTUNBAL);
+         }
+      }
+   } else if (keyval > root->key.val) {
+      if ( !root->right) {
+         return NULL;
+      }
+      node = remove_val(&root->right, keyval, dup, depth);
+      if (node && *depth == LESS) {
+         /* right subtree depth decreased */
+         switch (root->bal) {
+         CASE RIGHT:
+            root->bal = BAL;
+         CASE BAL:
+            root->bal = LEFT;
+            *depth = SAME;
+         CASE LEFT:
+            *depth = rebalance(rootaddr, LEFTUNBAL);
+         }
+      }
+   } else {
+      if (dup && root->left
+              && (node = remove_val(&root->left, keyval, dup, depth))) {
+         if (*depth == LESS) {
+            /* left subtree depth decreased */
+            switch (root->bal) {
+            CASE LEFT:
+               root->bal = BAL;
+            CASE BAL:
+               root->bal = RIGHT;
+               *depth = SAME;
+            CASE RIGHT:
+               *depth = rebalance(rootaddr, RIGHTUNBAL);
+            }
+         }
+      } else {
+         node = root;
+         if ( !node->right) {
+            *rootaddr = node->left;
+            *depth = LESS;
+         } else if ( !node->left) {
+            *rootaddr = node->right;
+            *depth = LESS;
+         } else {
+            /* replace by the leftmost node of the right subtree */
+            root = leftmost(&node->right, depth);
+            root->left  = node->left;
+            root->right = node->right;
+            if (*depth == LESS) {
+               /* right subtree depth decreased */
+               switch (node->bal) {
+               CASE RIGHT:
+                  root->bal = BAL;
+               CASE BAL:
+                  root->bal = LEFT;
+                  *depth = SAME;
+               CASE LEFT:
+                  *depth = rebalance(&root, LEFTUNBAL);
+               }
+            } else {
+               root->bal = node->bal;
+               *depth = SAME;
+            }
+            *rootaddr = root;
+         }
+      }
+   }
+   return node;
+}
+
+/*---------------------------------------------------------------------------*/
+
+static void *avl_f_remove(TREE *tree, long keyval)
+{
+   NODE *node;
+   void *data;
+   DEPTH depth;
+
+   if (tree->root) {
+      switch (LOCTYPE(tree->keyinfo)) {
+      CASE USR_NODUP: node = remove_ptr(&tree->root, (void *)keyval, tree->usrcmp, NODUP, &depth);
+      CASE STR_NODUP: node = remove_ptr(&tree->root, (void *)keyval, NULL,         NODUP, &depth);
+      CASE COR_NODUP: keyval = CORRECT(keyval);
+      case VAL_NODUP: node = remove_val(&tree->root,         keyval,               NODUP, &depth);
+      CASE USR_DUP:   node = remove_ptr(&tree->root, (void *)keyval, tree->usrcmp, DUP,   &depth);
+      CASE STR_DUP:   node = remove_ptr(&tree->root, (void *)keyval, NULL,         DUP,   &depth);
+      CASE COR_DUP:   keyval = CORRECT(keyval);
+      case VAL_DUP:   node = remove_val(&tree->root,         keyval,               DUP,   &depth);
+      DEFAULT:        node = NULL; assert( !"unexpected LOCTYPE");
+      }
+      if (node) {
+         tree->nodes--;
+         if (tree->path) {
+            FREE_PATH(tree->path);
+            tree->path = NULL;
+         }
+         data = node->data;
+         FREE_NODE(node);
+         return data;
+      }
+   }
+   return NULL;
+}
+
+void *avl_remove       (TREE *tree, void          *key) { return avl_f_remove(tree, (long)key); }
+void *avl_remove_mbr   (TREE *tree, void          *key) { return avl_f_remove(tree, (long)key); }
+void *avl_remove_chars (TREE *tree, char          *key) { return avl_f_remove(tree, (long)key); }
+void *avl_remove_ptr   (TREE *tree, void          *key) { return avl_f_remove(tree, (long)key); }
+void *avl_remove_str   (TREE *tree, char          *key) { return avl_f_remove(tree, (long)key); }
+void *avl_remove_long  (TREE *tree, long           key) { return avl_f_remove(tree, (long)key); }
+void *avl_remove_int   (TREE *tree, int            key) { return avl_f_remove(tree, (long)key); }
+void *avl_remove_short (TREE *tree, short          key) { return avl_f_remove(tree, (long)key); }
+void *avl_remove_schar (TREE *tree, signed char    key) { return avl_f_remove(tree, (long)key); }
+void *avl_remove_ulong (TREE *tree, unsigned long  key) { return avl_f_remove(tree, (long)key); }
+void *avl_remove_uint  (TREE *tree, unsigned int   key) { return avl_f_remove(tree, (long)key); }
+void *avl_remove_ushort(TREE *tree, unsigned short key) { return avl_f_remove(tree, (long)key); }
+void *avl_remove_uchar (TREE *tree, unsigned char  key) { return avl_f_remove(tree, (long)key); }
 
 /*===========================================================================*/
 
@@ -559,12 +867,12 @@ bool avl_insert(TREE *tree, void *data)
 
 /*---------------------------------------------------------------------------*/
 
-void *avl_f_locate(TREE *tree, long keyval)
+static void *avl_f_locate(TREE *tree, long keyval)
 {
-   NODE *node;
-   NODE *save;
-   int (*usrcmp)(void *, void *);
-   int   cmp;
+   NODE  *node;
+   NODE  *save;
+   CMPFUN usrcmp;
+   int    cmp;
 
    node = tree->root;
    switch (LOCTYPE(tree->keyinfo)) {
@@ -618,14 +926,28 @@ void *avl_f_locate(TREE *tree, long keyval)
    return NULL;
 }
 
+void *avl_locate       (TREE *tree, void          *key) { return avl_f_locate(tree, (long)key); }
+void *avl_locate_mbr   (TREE *tree, void          *key) { return avl_f_locate(tree, (long)key); }
+void *avl_locate_chars (TREE *tree, char          *key) { return avl_f_locate(tree, (long)key); }
+void *avl_locate_ptr   (TREE *tree, void          *key) { return avl_f_locate(tree, (long)key); }
+void *avl_locate_str   (TREE *tree, char          *key) { return avl_f_locate(tree, (long)key); }
+void *avl_locate_long  (TREE *tree, long           key) { return avl_f_locate(tree, (long)key); }
+void *avl_locate_int   (TREE *tree, int            key) { return avl_f_locate(tree, (long)key); }
+void *avl_locate_short (TREE *tree, short          key) { return avl_f_locate(tree, (long)key); }
+void *avl_locate_schar (TREE *tree, signed char    key) { return avl_f_locate(tree, (long)key); }
+void *avl_locate_ulong (TREE *tree, unsigned long  key) { return avl_f_locate(tree, (long)key); }
+void *avl_locate_uint  (TREE *tree, unsigned int   key) { return avl_f_locate(tree, (long)key); }
+void *avl_locate_ushort(TREE *tree, unsigned short key) { return avl_f_locate(tree, (long)key); }
+void *avl_locate_uchar (TREE *tree, unsigned char  key) { return avl_f_locate(tree, (long)key); }
+
 /*---------------------------------------------------------------------------*/
 
-void *avl_f_locate_ge(TREE *tree, long keyval)
+static void *avl_f_locate_ge(TREE *tree, long keyval)
 {
-   NODE *node;
-   NODE *save;
-   int (*usrcmp)(void *, void *);
-   int   cmp;
+   NODE  *node;
+   NODE  *save;
+   CMPFUN usrcmp;
+   int    cmp;
 
    node = tree->root;
    save = NULL;
@@ -668,14 +990,28 @@ void *avl_f_locate_ge(TREE *tree, long keyval)
    return save ? save->data : NULL;
 }
 
+void *avl_locate_ge       (TREE *tree, void          *key) { return avl_f_locate_ge(tree, (long)key); }
+void *avl_locate_ge_mbr   (TREE *tree, void          *key) { return avl_f_locate_ge(tree, (long)key); }
+void *avl_locate_ge_chars (TREE *tree, char          *key) { return avl_f_locate_ge(tree, (long)key); }
+void *avl_locate_ge_ptr   (TREE *tree, void          *key) { return avl_f_locate_ge(tree, (long)key); }
+void *avl_locate_ge_str   (TREE *tree, char          *key) { return avl_f_locate_ge(tree, (long)key); }
+void *avl_locate_ge_long  (TREE *tree, long           key) { return avl_f_locate_ge(tree, (long)key); }
+void *avl_locate_ge_int   (TREE *tree, int            key) { return avl_f_locate_ge(tree, (long)key); }
+void *avl_locate_ge_short (TREE *tree, short          key) { return avl_f_locate_ge(tree, (long)key); }
+void *avl_locate_ge_schar (TREE *tree, signed char    key) { return avl_f_locate_ge(tree, (long)key); }
+void *avl_locate_ge_ulong (TREE *tree, unsigned long  key) { return avl_f_locate_ge(tree, (long)key); }
+void *avl_locate_ge_uint  (TREE *tree, unsigned int   key) { return avl_f_locate_ge(tree, (long)key); }
+void *avl_locate_ge_ushort(TREE *tree, unsigned short key) { return avl_f_locate_ge(tree, (long)key); }
+void *avl_locate_ge_uchar (TREE *tree, unsigned char  key) { return avl_f_locate_ge(tree, (long)key); }
+
 /*---------------------------------------------------------------------------*/
 
-void *avl_f_locate_gt(TREE *tree, long keyval)
+static void *avl_f_locate_gt(TREE *tree, long keyval)
 {
-   NODE *node;
-   NODE *save;
-   int (*usrcmp)(void *, void *);
-   int   cmp;
+   NODE  *node;
+   NODE  *save;
+   CMPFUN usrcmp;
+   int    cmp;
 
    node = tree->root;
    save = NULL;
@@ -701,14 +1037,28 @@ void *avl_f_locate_gt(TREE *tree, long keyval)
    return save ? save->data : NULL;
 }
 
+void *avl_locate_gt       (TREE *tree, void          *key) { return avl_f_locate_gt(tree, (long)key); }
+void *avl_locate_gt_mbr   (TREE *tree, void          *key) { return avl_f_locate_gt(tree, (long)key); }
+void *avl_locate_gt_chars (TREE *tree, char          *key) { return avl_f_locate_gt(tree, (long)key); }
+void *avl_locate_gt_ptr   (TREE *tree, void          *key) { return avl_f_locate_gt(tree, (long)key); }
+void *avl_locate_gt_str   (TREE *tree, char          *key) { return avl_f_locate_gt(tree, (long)key); }
+void *avl_locate_gt_long  (TREE *tree, long           key) { return avl_f_locate_gt(tree, (long)key); }
+void *avl_locate_gt_int   (TREE *tree, int            key) { return avl_f_locate_gt(tree, (long)key); }
+void *avl_locate_gt_short (TREE *tree, short          key) { return avl_f_locate_gt(tree, (long)key); }
+void *avl_locate_gt_schar (TREE *tree, signed char    key) { return avl_f_locate_gt(tree, (long)key); }
+void *avl_locate_gt_ulong (TREE *tree, unsigned long  key) { return avl_f_locate_gt(tree, (long)key); }
+void *avl_locate_gt_uint  (TREE *tree, unsigned int   key) { return avl_f_locate_gt(tree, (long)key); }
+void *avl_locate_gt_ushort(TREE *tree, unsigned short key) { return avl_f_locate_gt(tree, (long)key); }
+void *avl_locate_gt_uchar (TREE *tree, unsigned char  key) { return avl_f_locate_gt(tree, (long)key); }
+
 /*---------------------------------------------------------------------------*/
 
-void *avl_f_locate_le(TREE *tree, long keyval)
+static void *avl_f_locate_le(TREE *tree, long keyval)
 {
-   NODE *node;
-   NODE *save;
-   int (*usrcmp)(void *, void *);
-   int   cmp;
+   NODE  *node;
+   NODE  *save;
+   CMPFUN usrcmp;
+   int    cmp;
 
    node = tree->root;
    save = NULL;
@@ -751,14 +1101,28 @@ void *avl_f_locate_le(TREE *tree, long keyval)
    return save ? save->data : NULL;
 }
 
+void *avl_locate_le       (TREE *tree, void          *key) { return avl_f_locate_le(tree, (long)key); }
+void *avl_locate_le_mbr   (TREE *tree, void          *key) { return avl_f_locate_le(tree, (long)key); }
+void *avl_locate_le_chars (TREE *tree, char          *key) { return avl_f_locate_le(tree, (long)key); }
+void *avl_locate_le_ptr   (TREE *tree, void          *key) { return avl_f_locate_le(tree, (long)key); }
+void *avl_locate_le_str   (TREE *tree, char          *key) { return avl_f_locate_le(tree, (long)key); }
+void *avl_locate_le_long  (TREE *tree, long           key) { return avl_f_locate_le(tree, (long)key); }
+void *avl_locate_le_int   (TREE *tree, int            key) { return avl_f_locate_le(tree, (long)key); }
+void *avl_locate_le_short (TREE *tree, short          key) { return avl_f_locate_le(tree, (long)key); }
+void *avl_locate_le_schar (TREE *tree, signed char    key) { return avl_f_locate_le(tree, (long)key); }
+void *avl_locate_le_ulong (TREE *tree, unsigned long  key) { return avl_f_locate_le(tree, (long)key); }
+void *avl_locate_le_uint  (TREE *tree, unsigned int   key) { return avl_f_locate_le(tree, (long)key); }
+void *avl_locate_le_ushort(TREE *tree, unsigned short key) { return avl_f_locate_le(tree, (long)key); }
+void *avl_locate_le_uchar (TREE *tree, unsigned char  key) { return avl_f_locate_le(tree, (long)key); }
+
 /*---------------------------------------------------------------------------*/
 
-void *avl_f_locate_lt(TREE *tree, long keyval)
+static void *avl_f_locate_lt(TREE *tree, long keyval)
 {
-   NODE *node;
-   NODE *save;
-   int (*usrcmp)(void *, void *);
-   int   cmp;
+   NODE  *node;
+   NODE  *save;
+   CMPFUN usrcmp;
+   int    cmp;
 
    node = tree->root;
    save = NULL;
@@ -783,6 +1147,20 @@ void *avl_f_locate_lt(TREE *tree, long keyval)
    }
    return save ? save->data : NULL;
 }
+
+void *avl_locate_lt       (TREE *tree, void          *key) { return avl_f_locate_lt(tree, (long)key); }
+void *avl_locate_lt_mbr   (TREE *tree, void          *key) { return avl_f_locate_lt(tree, (long)key); }
+void *avl_locate_lt_chars (TREE *tree, char          *key) { return avl_f_locate_lt(tree, (long)key); }
+void *avl_locate_lt_ptr   (TREE *tree, void          *key) { return avl_f_locate_lt(tree, (long)key); }
+void *avl_locate_lt_str   (TREE *tree, char          *key) { return avl_f_locate_lt(tree, (long)key); }
+void *avl_locate_lt_long  (TREE *tree, long           key) { return avl_f_locate_lt(tree, (long)key); }
+void *avl_locate_lt_int   (TREE *tree, int            key) { return avl_f_locate_lt(tree, (long)key); }
+void *avl_locate_lt_short (TREE *tree, short          key) { return avl_f_locate_lt(tree, (long)key); }
+void *avl_locate_lt_schar (TREE *tree, signed char    key) { return avl_f_locate_lt(tree, (long)key); }
+void *avl_locate_lt_ulong (TREE *tree, unsigned long  key) { return avl_f_locate_lt(tree, (long)key); }
+void *avl_locate_lt_uint  (TREE *tree, unsigned int   key) { return avl_f_locate_lt(tree, (long)key); }
+void *avl_locate_lt_ushort(TREE *tree, unsigned short key) { return avl_f_locate_lt(tree, (long)key); }
+void *avl_locate_lt_uchar (TREE *tree, unsigned char  key) { return avl_f_locate_lt(tree, (long)key); }
 
 /*---------------------------------------------------------------------------*/
 
@@ -818,311 +1196,104 @@ void *avl_locate_last(TREE *tree)
 
 /*===========================================================================*/
 
-static NODE *leftmost(NODE **rootaddr)
+static void *scan_subtree(NODE *root, bool (*callback)(void *))
 {
-   NODE *root = *rootaddr;
-   NODE *node;
-
-   if (root) {
-      if (root->left) {
-         node = leftmost(&root->left);
-         if (node->bal == LESS) {
-            /* left subtree depth decreased */
-            switch (root->bal) {
-            CASE LEFT:
-               root->bal = BAL;
-            CASE BAL:
-               root->bal = RIGHT;
-               node->bal = SAME;
-            CASE RIGHT:
-               root->bal = RIGHTUNBAL;
-               node->bal = rebalance(rootaddr);
-            }
-         }
-         return node;
-      } else {
-         *rootaddr = root->right;
-         root->bal = LESS;
-         return root;
-      }
-   } else {
-      return NULL;
-   }
-}
-
-/*---------------------------------------------------------------------------*/
-
-static NODE *remove_ptr(NODE **rootaddr,
-                        void *keyptr, int (*usrcmp)(void *, void *), bool dup)
-{
-   NODE *root = *rootaddr;
-   NODE *node;
-   int   cmp;
-
-   cmp = PTRCMP(usrcmp, keyptr, root->key.ptr);
-   if (cmp < 0) {
-      if ( !root->left) {
-         return NULL;
-      }
-      node = remove_ptr(&root->left, keyptr, usrcmp, dup);
-      if (node && node->bal == LESS) {
-         /* left subtree depth decreased */
-         switch (root->bal) {
-         CASE LEFT:
-            root->bal = BAL;
-         CASE BAL:
-            root->bal = RIGHT;
-            node->bal = SAME;
-         CASE RIGHT:
-            root->bal = RIGHTUNBAL;
-            node->bal = rebalance(rootaddr);
-         }
-      }
-   } else if (cmp > 0) {
-      if ( !root->right) {
-         return NULL;
-      }
-      node = remove_ptr(&root->right, keyptr, usrcmp, dup);
-      if (node && node->bal == LESS) {
-         /* right subtree depth decreased */
-         switch (root->bal) {
-         CASE RIGHT:
-            root->bal = BAL;
-         CASE BAL:
-            root->bal = LEFT;
-            node->bal = SAME;
-         CASE LEFT:
-            root->bal = LEFTUNBAL;
-            node->bal = rebalance(rootaddr);
-         }
-      }
-   } else {
-      if (dup && root->left
-              && (node = remove_ptr(&root->left, keyptr, usrcmp, dup))) {
-         if (node->bal == LESS) {
-            /* left subtree depth decreased */
-            switch (root->bal) {
-            CASE LEFT:
-               root->bal = BAL;
-            CASE BAL:
-               root->bal = RIGHT;
-               node->bal = SAME;
-            CASE RIGHT:
-               root->bal = RIGHTUNBAL;
-               node->bal = rebalance(rootaddr);
-            }
-         }
-      } else {
-         node = root;
-         if ( !node->right) {
-            *rootaddr = node->left;
-            node->bal = LESS;
-         } else if ( !node->left) {
-            *rootaddr = node->right;
-            node->bal = LESS;
-         } else {
-            /* replace by the leftmost node of the right subtree */
-            root = leftmost(&node->right);
-            root->left  = node->left;
-            root->right = node->right;
-            if (root->bal == LESS) {
-               /* right subtree depth decreased */
-               switch (node->bal) {
-               CASE RIGHT:
-                  root->bal = BAL;
-                  node->bal = LESS;
-               CASE BAL:
-                  root->bal = LEFT;
-                  node->bal = SAME;
-               CASE LEFT:
-                  root->bal = LEFTUNBAL;
-                  node->bal = rebalance(&root);
-               }
-            } else {
-               root->bal = node->bal;
-               node->bal = SAME;
-            }
-            *rootaddr = root;
-         }
-      }
-   }
-   return node;
-}
-
-/*---------------------------------------------------------------------------*/
-
-static NODE *remove_val(NODE **rootaddr, long keyval, bool dup)
-{
-   NODE *root = *rootaddr;
-   NODE *node;
-
-   if (keyval < root->key.val) {
-      if ( !root->left) {
-         return NULL;
-      }
-      node = remove_val(&root->left, keyval, dup);
-      if (node && node->bal == LESS) {
-         /* left subtree depth decreased */
-         switch (root->bal) {
-         CASE LEFT:
-            root->bal = BAL;
-         CASE BAL:
-            root->bal = RIGHT;
-            node->bal = SAME;
-         CASE RIGHT:
-            root->bal = RIGHTUNBAL;
-            node->bal = rebalance(rootaddr);
-         }
-      }
-   } else if (keyval > root->key.val) {
-      if ( !root->right) {
-         return NULL;
-      }
-      node = remove_val(&root->right, keyval, dup);
-      if (node && node->bal == LESS) {
-         /* right subtree depth decreased */
-         switch (root->bal) {
-         CASE RIGHT:
-            root->bal = BAL;
-         CASE BAL:
-            root->bal = LEFT;
-            node->bal = SAME;
-         CASE LEFT:
-            root->bal = LEFTUNBAL;
-            node->bal = rebalance(rootaddr);
-         }
-      }
-   } else {
-      if (dup && root->left
-              && (node = remove_val(&root->left, keyval, dup))) {
-         if (node->bal == LESS) {
-            /* left subtree depth decreased */
-            switch (root->bal) {
-            CASE LEFT:
-               root->bal = BAL;
-            CASE BAL:
-               root->bal = RIGHT;
-               node->bal = SAME;
-            CASE RIGHT:
-               root->bal = RIGHTUNBAL;
-               node->bal = rebalance(rootaddr);
-            }
-         }
-      } else {
-         node = root;
-         if ( !node->right) {
-            *rootaddr = node->left;
-            node->bal = LESS;
-         } else if ( !node->left) {
-            *rootaddr = node->right;
-            node->bal = LESS;
-         } else {
-            /* replace by the leftmost node of the right subtree */
-            root = leftmost(&node->right);
-            root->left  = node->left;
-            root->right = node->right;
-            if (root->bal == LESS) {
-               /* right subtree depth decreased */
-               switch (node->bal) {
-               CASE RIGHT:
-                  root->bal = BAL;
-                  node->bal = LESS;
-               CASE BAL:
-                  root->bal = LEFT;
-                  node->bal = SAME;
-               CASE LEFT:
-                  root->bal = LEFTUNBAL;
-                  node->bal = rebalance(&root);
-               }
-            } else {
-               root->bal = node->bal;
-               node->bal = SAME;
-            }
-            *rootaddr = root;
-         }
-      }
-   }
-   return node;
-}
-
-/*---------------------------------------------------------------------------*/
-
-void *avl_f_remove(TREE *tree, long keyval)
-{
-   NODE *node;
    void *data;
 
-   if (tree->root) {
-      switch (LOCTYPE(tree->keyinfo)) {
-      CASE USR_NODUP:
-         node = remove_ptr(&tree->root, (void *)keyval, tree->usrcmp, NODUP);
-      CASE STR_NODUP:
-         node = remove_ptr(&tree->root, (void *)keyval, AVL_AVLCMP, NODUP);
-      CASE COR_NODUP:
-         keyval = CORRECT(keyval);
-      case VAL_NODUP:
-         node = remove_val(&tree->root, keyval, NODUP);
-      CASE USR_DUP:
-         node = remove_ptr(&tree->root, (void *)keyval, tree->usrcmp, DUP);
-      CASE STR_DUP:
-         node = remove_ptr(&tree->root, (void *)keyval, AVL_AVLCMP, DUP);
-      CASE COR_DUP:
-         keyval = CORRECT(keyval);
-      case VAL_DUP:
-         node = remove_val(&tree->root, keyval, DUP);
-      DEFAULT:
-         node = NULL; assert( !"unexpected LOCTYPE");
-      }
-      if (node) {
-         tree->nodes--;
-         if (tree->path) {
-            FREE_PATH(tree->path);
-            tree->path = NULL;
-         }
-         data = node->data;
-         FREE_NODE(node);
-         return data;
-      }
+   if (root->left) {
+      if ((data = scan_subtree(root->left,  callback))) return data;
+   }
+   if ((*callback)(root->data)) return root->data;
+   if (root->right) {
+      if ((data = scan_subtree(root->right, callback))) return data;
    }
    return NULL;
 }
 
+/*---------------------------------------------------------------------------*/
+
+static void *backscan_subtree(NODE *root, bool (*callback)(void *))
+{
+   void *data;
+
+   if (root->right) {
+      if ((data = backscan_subtree(root->right, callback))) return data;
+   }
+   if ((*callback)(root->data)) return root->data;
+   if (root->left) {
+      if ((data = backscan_subtree(root->left,  callback))) return data;
+   }
+   return NULL;
+}
+
+/*---------------------------------------------------------------------------*/
+
+void *avl_scan(TREE *tree, bool (*callback)(void *))
+{
+   return tree->root ? scan_subtree(tree->root, callback) : NULL;
+}
+
+/*---------------------------------------------------------------------------*/
+
+void *avl_backscan(TREE *tree, bool (*callback)(void *))
+{
+   return tree->root ? backscan_subtree(tree->root, callback) : NULL;
+}
+
 /*===========================================================================*/
 
-static void scan_subtree(NODE *root, void (*usrfun)(void *))
+static void *walk_subtree(NODE *root, bool (*callback)(void *, void *), void *context)
 {
-   if (root->left)  scan_subtree(root->left,  usrfun);
-   (*usrfun)(root->data);
-   if (root->right) scan_subtree(root->right, usrfun);
-}
+   void *data;
 
-/*---------------------------------------------------------------------------*/
-
-static void backscan_subtree(NODE *root, void (*usrfun)(void *))
-{
-   if (root->right) backscan_subtree(root->right, usrfun);
-   (*usrfun)(root->data);
-   if (root->left)  backscan_subtree(root->left,  usrfun);
-}
-
-/*---------------------------------------------------------------------------*/
-
-void avl_f_scan(TREE *tree, void (*usrfun)(void *), bool back)
-{
-   if (tree->root) {
-      if (back) backscan_subtree(tree->root, usrfun);
-      else      scan_subtree    (tree->root, usrfun);
+   if (root->left) {
+      if ((data = walk_subtree(root->left,  callback, context))) return data;
    }
+   if ((*callback)(root->data, context)) return root->data;
+   if (root->right) {
+      if ((data = walk_subtree(root->right, callback, context))) return data;
+   }
+   return NULL;
+}
+
+/*---------------------------------------------------------------------------*/
+
+static void *backwalk_subtree(NODE *root, bool (*callback)(void *, void *), void *context)
+{
+   void *data;
+
+   if (root->left) {
+      if ((data = backwalk_subtree(root->left,  callback, context))) return data;
+   }
+   if ((*callback)(root->data, context)) return root->data;
+   if (root->right) {
+      if ((data = backwalk_subtree(root->right, callback, context))) return data;
+   }
+   return NULL;
+}
+
+/*---------------------------------------------------------------------------*/
+
+void *avl_walk(TREE *tree, bool (*callback)(void *, void *), void *context)
+{
+   return tree->root ? walk_subtree(tree->root, callback, context) : NULL;
+}
+
+/*---------------------------------------------------------------------------*/
+
+void *avl_backwalk(TREE *tree, bool (*callback)(void *, void *), void *context)
+{
+   return tree->root ? backwalk_subtree(tree->root, callback, context) : NULL;
 }
 
 /*===========================================================================*/
 
 void *avl_first(TREE *tree)
 {
-   PATH *path;
-   char *pathright;
+   PATH  *path;
+   char  *pathright;
    NODE **pathnode;
-   NODE *node;
+   NODE  *node;
 
    if ( !tree->root) {
       return NULL;
@@ -1156,10 +1327,10 @@ void *avl_first(TREE *tree)
 
 void *avl_last(TREE *tree)
 {
-   PATH *path;
-   char *pathright;
+   PATH  *path;
+   char  *pathright;
    NODE **pathnode;
-   NODE *node;
+   NODE  *node;
 
    if ( !tree->root) {
       return NULL;
@@ -1217,16 +1388,16 @@ void *avl_last(TREE *tree)
 
 /*---------------------------------------------------------------------------*/
 
-void *avl_f_start(TREE *tree, long keyval, bool back)
+static void *avl_f_start(TREE *tree, long keyval, bool back)
 {
-   PATH *path;
-   char *pathright;
+   PATH  *path;
+   char  *pathright;
    NODE **pathnode;
-   NODE *node;
-   char *saveright;
+   NODE  *node;
+   char  *saveright;
    NODE **savenode;
-   int (*usrcmp)(void *, void *);
-   int   cmp;
+   CMPFUN usrcmp;
+   int    cmp;
 
    if ( !tree->root) {
       return NULL;
@@ -1370,14 +1541,42 @@ void *avl_f_start(TREE *tree, long keyval, bool back)
    }
 }
 
+void *avl_start       (TREE *tree, void          *key) { return avl_f_start(tree, (long)key, false); }
+void *avl_start_mbr   (TREE *tree, void          *key) { return avl_f_start(tree, (long)key, false); }
+void *avl_start_chars (TREE *tree, char          *key) { return avl_f_start(tree, (long)key, false); }
+void *avl_start_ptr   (TREE *tree, void          *key) { return avl_f_start(tree, (long)key, false); }
+void *avl_start_str   (TREE *tree, char          *key) { return avl_f_start(tree, (long)key, false); }
+void *avl_start_long  (TREE *tree, long           key) { return avl_f_start(tree, (long)key, false); }
+void *avl_start_int   (TREE *tree, int            key) { return avl_f_start(tree, (long)key, false); }
+void *avl_start_short (TREE *tree, short          key) { return avl_f_start(tree, (long)key, false); }
+void *avl_start_schar (TREE *tree, signed char    key) { return avl_f_start(tree, (long)key, false); }
+void *avl_start_ulong (TREE *tree, unsigned long  key) { return avl_f_start(tree, (long)key, false); }
+void *avl_start_uint  (TREE *tree, unsigned int   key) { return avl_f_start(tree, (long)key, false); }
+void *avl_start_ushort(TREE *tree, unsigned short key) { return avl_f_start(tree, (long)key, false); }
+void *avl_start_uchar (TREE *tree, unsigned char  key) { return avl_f_start(tree, (long)key, false); }
+
+void *avl_backstart       (TREE *tree, void          *key) { return avl_f_start(tree, (long)key, true); }
+void *avl_backstart_mbr   (TREE *tree, void          *key) { return avl_f_start(tree, (long)key, true); }
+void *avl_backstart_chars (TREE *tree, char          *key) { return avl_f_start(tree, (long)key, true); }
+void *avl_backstart_ptr   (TREE *tree, void          *key) { return avl_f_start(tree, (long)key, true); }
+void *avl_backstart_str   (TREE *tree, char          *key) { return avl_f_start(tree, (long)key, true); }
+void *avl_backstart_long  (TREE *tree, long           key) { return avl_f_start(tree, (long)key, true); }
+void *avl_backstart_int   (TREE *tree, int            key) { return avl_f_start(tree, (long)key, true); }
+void *avl_backstart_short (TREE *tree, short          key) { return avl_f_start(tree, (long)key, true); }
+void *avl_backstart_schar (TREE *tree, signed char    key) { return avl_f_start(tree, (long)key, true); }
+void *avl_backstart_ulong (TREE *tree, unsigned long  key) { return avl_f_start(tree, (long)key, true); }
+void *avl_backstart_uint  (TREE *tree, unsigned int   key) { return avl_f_start(tree, (long)key, true); }
+void *avl_backstart_ushort(TREE *tree, unsigned short key) { return avl_f_start(tree, (long)key, true); }
+void *avl_backstart_uchar (TREE *tree, unsigned char  key) { return avl_f_start(tree, (long)key, true); }
+
 /*---------------------------------------------------------------------------*/
 
 void *avl_next(TREE *tree)
 {
-   PATH *path;
-   char *pathright;
+   PATH  *path;
+   char  *pathright;
    NODE **pathnode;
-   NODE *node;
+   NODE  *node;
 
    path = tree->path;
    if ( !path) {
@@ -1415,10 +1614,10 @@ void *avl_next(TREE *tree)
 
 void *avl_prev(TREE *tree)
 {
-   PATH *path;
-   char *pathright;
+   PATH  *path;
+   char  *pathright;
    NODE **pathnode;
-   NODE *node;
+   NODE  *node;
 
    path = tree->path;
    if ( !path) {
@@ -1464,103 +1663,50 @@ void avl_stop(TREE *tree)
 
 /*===========================================================================*/
 
-static size_t Offset;
-static void  *Save;
+typedef struct {
+   size_t offset;
+   void  *data;
+} LINK;
 
 /*---------------------------------------------------------------------------*/
 
-static void link_subtree(NODE *node)
+static void link_subtree(NODE *node, LINK *link)
 {
-   if (node->right) link_subtree(node->right);
-   *(void **)((char *)node->data + Offset) = Save;
-   Save = node->data;
-   if (node->left)  link_subtree(node->left);
+   if (node->right) link_subtree(node->right, link);
+   *(void **)((char *)node->data + link->offset) = link->data;
+   link->data = node->data;
+   if (node->left)  link_subtree(node->left, link);
 }
 
 /*---------------------------------------------------------------------------*/
 
-static void backlink_subtree(NODE *node)
+static void backlink_subtree(NODE *node, LINK *link)
 {
-   if (node->left)  backlink_subtree(node->left);
-   *(void **)((char *)node->data + Offset) = Save;
-   Save = node->data;
-   if (node->right) backlink_subtree(node->right);
+   if (node->left)  backlink_subtree(node->left, link);
+   *(void **)((char *)node->data + link->offset) = link->data;
+   link->data = node->data;
+   if (node->right) backlink_subtree(node->right, link);
 }
 
 /*---------------------------------------------------------------------------*/
 
-void *avl_f_link(TREE *tree, size_t ptroffs, bool back)
+void *avl_linked_list(TREE *tree, size_t ptroffs, bool back)
 {
-   Offset = ptroffs;
-   Save = NULL;
+   LINK link;
+   link.offset = ptroffs;
+   link.data   = NULL;
    if (tree->root) {
-      if (back) backlink_subtree(tree->root);
-      else      link_subtree    (tree->root);
+      if (back) backlink_subtree(tree->root, &link);
+      else      link_subtree    (tree->root, &link);
    }
-   return Save;
+   return link.data;
 }
 
 /*===========================================================================*/
 
-static void release_subtree(NODE *root, void (*usrfun)(void *))
+long avl_nodes(TREE *tree)
 {
-   if (root->left)  release_subtree(root->left,  usrfun);
-   if (root->right) release_subtree(root->right, usrfun);
-   (*usrfun)(root->data);
-   FREE_NODE(root);
-}
-
-/*---------------------------------------------------------------------------*/
-
-static void reset_subtree(NODE *root)
-{
-   if (root->left)  reset_subtree(root->left);
-   if (root->right) reset_subtree(root->right);
-   FREE_NODE(root);
-}
-
-/*---------------------------------------------------------------------------*/
-
-void avl_release(TREE *tree, void (*usrfun)(void *))
-{
-   if (tree->root) {
-      release_subtree(tree->root, usrfun);
-   }
-   tree->root  = NULL;
-   tree->nodes = 0;
-   if (tree->path) {
-      FREE_PATH(tree->path);
-      tree->path = NULL;
-   }
-}
-
-/*---------------------------------------------------------------------------*/
-
-void avl_reset(TREE *tree)
-{
-   if (tree->root) {
-      reset_subtree(tree->root);
-   }
-   tree->root  = NULL;
-   tree->nodes = 0;
-   if (tree->path) {
-      FREE_PATH(tree->path);
-      tree->path = NULL;
-   }
-}
-
-/*---------------------------------------------------------------------------*/
-
-void avl_close(TREE *tree)
-{
-   if (tree->root) {
-      reset_subtree(tree->root);
-   }
-   if (tree->path) {
-     FREE_PATH(tree->path);
-   }
-   tree->keyinfo = (USHORT)-1;
-   FREE_TREE(tree);
+   return tree->nodes;
 }
 
 /*===========================================================================*/
@@ -1625,4 +1771,67 @@ TREE *avl_copy(TREE *tree)
       newtree->root = NULL;
    }
    return newtree;
+}
+
+/*===========================================================================*/
+
+static void release_subtree(NODE *root, void (*callback)(void *))
+{
+   if (root->left)  release_subtree(root->left,  callback);
+   if (root->right) release_subtree(root->right, callback);
+   (*callback)(root->data);
+   FREE_NODE(root);
+}
+
+/*---------------------------------------------------------------------------*/
+
+static void reset_subtree(NODE *root)
+{
+   if (root->left)  reset_subtree(root->left);
+   if (root->right) reset_subtree(root->right);
+   FREE_NODE(root);
+}
+
+/*---------------------------------------------------------------------------*/
+
+void avl_release(TREE *tree, void (*callback)(void *))
+{
+   if (tree->root) {
+      release_subtree(tree->root, callback);
+   }
+   tree->root  = NULL;
+   tree->nodes = 0;
+   if (tree->path) {
+      FREE_PATH(tree->path);
+      tree->path = NULL;
+   }
+}
+
+/*---------------------------------------------------------------------------*/
+
+void avl_reset(TREE *tree)
+{
+   if (tree->root) {
+      reset_subtree(tree->root);
+   }
+   tree->root  = NULL;
+   tree->nodes = 0;
+   if (tree->path) {
+      FREE_PATH(tree->path);
+      tree->path = NULL;
+   }
+}
+
+/*---------------------------------------------------------------------------*/
+
+void avl_close(TREE *tree)
+{
+   if (tree->root) {
+      reset_subtree(tree->root);
+   }
+   if (tree->path) {
+     FREE_PATH(tree->path);
+   }
+   tree->keyinfo = (USHORT)-1;
+   FREE_TREE(tree);
 }
