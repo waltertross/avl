@@ -35,8 +35,9 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 /* WARNING:
  *    a) sizeof(void *) == sizeof(long) is assumed
- *    b) for threads, consider that these functions use global variables:
+ *    b) for threads, keep in mind that these functions use global variables:
  *       avl_*tree*(), avl_insert(), avl_remove*(),
+ *       avl_release(), avl_reset(), avl_close(),
  *       avl_start*(), avl_next(), avl_prev(), avl_stop().
  */
 
