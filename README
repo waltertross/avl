@@ -1,16 +1,29 @@
 
-A simple but effective AVL tree library.
+A simple but effective AVL tree library - v 2.0.0
 
-Warning:
-   a) sizeof(void *) == sizeof(long) is assumed, and
-   b) a single thread is assumed.
+WARNING:
+   a) sizeof(void *) == sizeof(long) is assumed
+   b) For threads, keep in mind that these functions use global variables:
+      avl_*tree*(), avl_insert(), avl_remove*(),
+      avl_release(), avl_reset(), avl_close(),
+      avl_start*(), avl_next(), avl_prev(), avl_stop().
 
 For the time being, please read the comments in the .h file.
 A more comprehensive README will follow.
-
-For forward compatibility, do not use the avl_tree() and the *_f_*() functions.
 
 The current version is optimized for lookup speed (under certain conditions), not for space.
 
 Please report any problems you may encounter to waltertross at gmail.
 
+CHANGELOG (version numbers follow the "semantic versioning" convention):
+
+v 2.0.0:
+ - Removed function macros from avl.h except for avl_*_tree*() and avl_*link().
+   This makes avl_locate_int() etc. necessary for integer keys.
+   (This is also in preparation for sizeof(void*)!=sizeof(long).)
+ - Changed avl_[back]scan() to return the data pointer when the callback returns true.
+ - Added avl_[back]walk() (like avl_[back]scan(), but with a context pointer for the callback).
+ - Renamed avl_f_link() to avl_linked_list().
+
+v 1.0.0:
+   Legacy version, mostly unaltered since 1991
