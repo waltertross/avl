@@ -11,6 +11,13 @@ can do with this library (look for the functions starting with avl_):
 
 #define AVL_FOR(tree, p) for ((p) = avl_first(tree); (p); (p) = avl_next(tree))
 
+typedef struct student {
+   int id;
+   char *name;
+   float vote_avg;
+   struct student *next_student;
+} STUDENT;
+
 int student_cmp(STUDENT *s1, STUDENT *s2)
 {
    int cmp = strcmp(s1->name, s2->name);
@@ -37,8 +44,8 @@ int main(int argc, char *argv[])
       avl_insert(students_by_id,          student);
       avl_insert(students_by_vote_avg,    student);
    }
-   AVL_FOR(students_by_name, student) {
-      printf("%8d %s\n", student->id, student->name); // same name: in arrival order
+   AVL_FOR(students_by_name, student) { // duplicate names: in arrival order
+      printf("%8d %s\n", student->id, student->name);
    }
    int id = argc > 1 ? atoi(argv[1]) : 1;
    student = avl_locate_int(students_by_id, id);
@@ -47,14 +54,15 @@ int main(int argc, char *argv[])
    other = avl_locate_gt_float(students_by_vote_avg, student->vote_avg);
    if (other) printf("first student with better vote avg: %d\n", other->id);
 
-   for (other = avl_start(students_by_name, "M"); other; other = avl_next(students_by_name)) {
+   for (other = avl_start(students_by_name, "M"); other;
+        other = avl_next (students_by_name)) {
       printf("%s\n", other->name);
    }
    float vote_avg_sum = 0.0;
    avl_do_w_ctx(students_by_vote_avg, sum_vote_avg, &vote_avg_sum);
    printf("vote avg avg: %f\n", vote_avg_sum / avl_nodes(students_by_vote_avg));
 
-   first_student_of_list = avl_link(students_by_id, STUDENT, next);
+   first_student_of_list = avl_link(students_by_id, STUDENT, next_student);
 
    donkey = avl_locate_first(students_by_vote_avg);
    if (donkey) printf("student with lowest vote avg: %d\n", donkey->id);
@@ -75,7 +83,8 @@ A more comprehensive README will follow.
 Please report any problems you may encounter to waltertross at gmail.
 
 This library requires <stdint.h> (which is not universally available) unless you
-#define AVL_UINTPTR_T as your replacement of uintptr_t (with sizeof(AVL_UINTPTR_T) == sizeof(void *))
+#define AVL_UINTPTR_T as your replacement of uintptr_t
+(with sizeof(AVL_UINTPTR_T) == sizeof(void *))
 
 Thread safety: these functions call malloc/free (or AVL_MALLOC/AVL_FREE):
  - avl[_string]_tree[...]()
