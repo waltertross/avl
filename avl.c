@@ -2,10 +2,9 @@
  |                                                                            |
  |                                   avl.c                                    |
  |                                                                            |
- |               A simple but effective AVL trees library in C,               |
- |             created by Walter Tross sometime before 1991-03-11             |
+ |                         An AVL Trees Library in C                          |
  |                                                                            |
- |                                  v 2.0.0                                   |
+ |                                  v 3.0.0                                   |
  |                                                                            |
  *----------------------------------------------------------------------------*/
 /*
@@ -13,13 +12,13 @@ Copyright (c) 2013, Walter Tross <waltertross at gmail dot com>
 All rights reserved.
 
 Redistribution and use in source and binary forms, with or without
-modification, are permitted provided that the following conditions are met: 
+modification, are permitted provided that the following conditions are met:
 
 1. Redistributions of source code must retain the above copyright notice, this
-   list of conditions and the following disclaimer. 
+   list of conditions and the following disclaimer.
 2. Redistributions in binary form must reproduce the above copyright notice,
    this list of conditions and the following disclaimer in the documentation
-   and/or other materials provided with the distribution. 
+   and/or other materials provided with the distribution.
 
 THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND
 ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
@@ -33,14 +32,52 @@ ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 */
 
+/*
+ * For portable support of 2 kinds of tree nodes, this version contains
+ * a lot of WET (write everything twice) code...
+ */
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <assert.h>
+#include <limits.h>
 #include "avl.h"
+
+/*---------------------------------------------------------------------------*/
+/* Redefinable: */
+
+#ifndef AVL_MALLOC
+#define AVL_MALLOC malloc
+#endif
+#ifndef AVL_FREE
+#define AVL_FREE free
+#endif
+
+#ifndef AVL_UINTPTR_T
+#include <stdint.h>
+#define UINTPTR uintptr_t
+#else
+#define UINTPTR AVL_UINTPTR_T
+#endif
+
+#ifndef AVL_NODE_INCREMENT_SHIFT
+#define AVL_NODE_INCREMENT_SHIFT 2
+#endif
+#ifndef AVL_NODE_INCREMENT_MAX
+#define AVL_NODE_INCREMENT_MAX (1024 * 1024 - 1)
+#endif
+
+/*---------------------------------------------------------------------------*/
 
 #define CASE    break; case
 #define DEFAULT break; default
+
+#ifndef MAX
+#define MAX(a, b) ((a) >= (b) ? (a) : (b))
+#endif
+#ifndef MIN
+#define MIN(a, b) ((a) <= (b) ? (a) : (b))
+#endif
 
 typedef unsigned long  ULONG;
 typedef unsigned int   UINT;
@@ -50,37 +87,85 @@ typedef   signed char  SCHAR;
 
 typedef int (*CMPFUN)(void *, void *);
 
-typedef union avl_key {
-   void *ptr;
-   long  val;
-} KEY;
+typedef struct avl_x_node X_NODE; /* external key node */
+typedef struct avl_l_node L_NODE; /* long key node     */
 
-typedef struct avl_node NODE;
-struct avl_node {
-   KEY   key;
+struct avl_x_node {
    void *data;
-   NODE *left;
-   NODE *right;
-   int   bal;
+   union {
+      X_NODE *left;
+      UINTPTR leftval;
+   };
+   union {
+      X_NODE *right;
+      UINTPTR rightval;
+   };
 };
 
-#define AVL_MAX_PATHDEPTH (sizeof(long) * 8 * 3 / 2 - 2)
+struct avl_l_node {
+   long key;
+   union {
+      L_NODE *left;
+      UINTPTR leftval;
+   };
+   union {
+      L_NODE *right;
+      UINTPTR rightval;
+   };
+   void *data;
+};
+
+#define DEEPER          ((UINTPTR)1)
+#define VAL_OF(nodeptr) ((UINTPTR)nodeptr)
+#define PTR_OF(nodeptr) ((void   *)(VAL_OF(nodeptr) & ~DEEPER))
+#define IS_DEEPER(nodeptr)         (VAL_OF(nodeptr) &  DEEPER)
+
+#define LOG_2_MAX_NODES (sizeof(long) * CHAR_BIT - 1)
+#define MAX_PATHDEPTH ((4761964 * LOG_2_MAX_NODES - 1083441) / 3305955)
 
 typedef struct avl_path {
-   NODE **pathnode;
-   char  *pathright;
-   NODE  *node [AVL_MAX_PATHDEPTH + 2];
-   char   right[AVL_MAX_PATHDEPTH + 2];
+   union {
+      void   **  pathnode;
+      X_NODE **x_pathnode;
+      L_NODE **l_pathnode;
+   };
+   char *pathright;
+   union {
+      void   *  node[MAX_PATHDEPTH + 2];
+      X_NODE *x_node[MAX_PATHDEPTH + 2];
+      L_NODE *l_node[MAX_PATHDEPTH + 2];
+   };
+   char right[MAX_PATHDEPTH + 2];
 } PATH;
 
 struct avl_tree {
-   NODE  *root;
-   PATH  *path;
-   long   nodes;
+   union {
+      void   *  root;
+      X_NODE *x_root;
+      L_NODE *l_root;
+   };
    CMPFUN usrcmp;
-   USHORT keyinfo;
+   PATH  *path;
+   union {
+      void   *  unused;
+      X_NODE *x_unused;
+      L_NODE *l_unused;
+   };
+   union {
+      void   *  store;
+      X_NODE *x_store;
+      L_NODE *l_store;
+   };
+   long   nodes;
+   long   alloc;
+   int    avail;
    USHORT keyoffs;
+   char   bits;
+   char   type;
 };
+
+#define NODUP 0
+#define DUP   1
 
 #define AVL_CHA AVL_CHARS
 #define AVL_LNG AVL_LONG
@@ -90,11 +175,13 @@ struct avl_tree {
 #define AVL_UIN AVL_UINT
 #define AVL_USH AVL_USHORT
 #define AVL_UCH AVL_UCHAR
+#define AVL_FLT AVL_FLOAT
+#define AVL_DBL AVL_DOUBLE
 
 #define USR_KEY (AVL_USR >> 1)
 #define MBR_KEY (AVL_MBR >> 1)
-#define CHA_KEY (AVL_CHA >> 1)
 #define PTR_KEY (AVL_PTR >> 1)
+#define CHA_KEY (AVL_CHA >> 1)
 #define STR_KEY (AVL_STR >> 1)
 #define LNG_KEY (AVL_LNG >> 1)
 #define INT_KEY (AVL_INT >> 1)
@@ -104,47 +191,64 @@ struct avl_tree {
 #define UIN_KEY (AVL_UIN >> 1)
 #define USH_KEY (AVL_USH >> 1)
 #define UCH_KEY (AVL_UCH >> 1)
+#define FLT_KEY (AVL_FLT >> 1)
+#define DBL_KEY (AVL_DBL >> 1)
 
-#define USR_CMP 0
-#define STR_CMP 1
-#define VAL_CMP 2
-#define COR_CMP 3
+#define KEYTYPE(tree) ((tree)->type >> 1)
 
-#define NODUP 0
-#define DUP   1
+/* bits:          3 2 1 0
+ *                X V I D
+ * L_CHA_[NO]DUP  0 0 0 x
+ * L_STR_[NO]DUP  0 0 1 x
+ * L_VAL_[NO]DUP  0 1 0 x
+ * L_COR_[NO]DUP  0 1 1 x
+ * X_USR_[NO]DUP  1 0 0 x
+ * X_PTR_[NO]DUP  1 0 1 x
+ * X_MBR_[NO]DUP  1 1 0 x
+ */
+#define DUP_BIT  1
+#define IND_BIT  2
+#define CORR_BIT IND_BIT
+#define VAL_BIT  4
+#define MBR_BIT  VAL_BIT
+#define X_BIT    8
+#define IS_DUP(tree)  ((tree)->bits & DUP_BIT)
+#define IS_IND(tree)  ((tree)->bits & IND_BIT)
+#define IS_CORR(tree) ((tree)->bits & CORR_BIT)
+#define IS_X(tree)    ((tree)->bits >= X_BIT)
+#define CMPTYPE(tree) ((tree)->bits >> 1)
 
-#define USR_NODUP (USR_CMP | NODUP << 2)
-#define STR_NODUP (STR_CMP | NODUP << 2)
-#define VAL_NODUP (VAL_CMP | NODUP << 2)
-#define COR_NODUP (COR_CMP | NODUP << 2)
-#define USR_DUP   (USR_CMP | DUP   << 2)
-#define STR_DUP   (STR_CMP | DUP   << 2)
-#define VAL_DUP   (VAL_CMP | DUP   << 2)
-#define COR_DUP   (COR_CMP | DUP   << 2)
+/* CMPTYPE */
+#define X_USR_CMP (X_BIT >> 1)
+#define X_MBR_CMP ((X_BIT | MBR_BIT) >> 1)
+#define X_PTR_CMP ((X_BIT | IND_BIT) >> 1)
+#define L_CHA_CMP 0
+#define L_STR_CMP (IND_BIT >> 1)
+#define L_VAL_CMP (VAL_BIT >> 1)
+#define L_COR_CMP ((VAL_BIT | CORR_BIT) >> 1)
 
-/* keyinfo: bits 6-3: KEYTYPE, bit 2: DUP, bits 1-0: CMPTYPE */
-/*          bits 6-2: TREETYPE,            bits 2-0: LOCTYPE */
+/* tree->bits */
+#define X_USR_NODUP (X_USR_CMP << 1)
+#define X_MBR_NODUP (X_MBR_CMP << 1)
+#define X_PTR_NODUP (X_PTR_CMP << 1)
+#define L_CHA_NODUP (L_CHA_CMP << 1)
+#define L_STR_NODUP (L_STR_CMP << 1)
+#define L_VAL_NODUP (L_VAL_CMP << 1)
+#define L_COR_NODUP (L_COR_CMP << 1)
+#define X_USR_DUP   (X_USR_CMP << 1 | DUP_BIT)
+#define X_MBR_DUP   (X_MBR_CMP << 1 | DUP_BIT)
+#define X_PTR_DUP   (X_PTR_CMP << 1 | DUP_BIT)
+#define L_CHA_DUP   (L_CHA_CMP << 1 | DUP_BIT)
+#define L_STR_DUP   (L_STR_CMP << 1 | DUP_BIT)
+#define L_VAL_DUP   (L_VAL_CMP << 1 | DUP_BIT)
+#define L_COR_DUP   (L_COR_CMP << 1 | DUP_BIT)
 
-#define KEYTYPE( keyinfo) ((keyinfo) >> 3)
-#define TREETYPE(keyinfo) ((keyinfo) >> 2)
-#define CMPTYPE( keyinfo) ((keyinfo) & 0x3)
-#define LOCTYPE( keyinfo) ((keyinfo) & 0x7)
+#define UIN_CORR (sizeof(UINT)   == sizeof(long))
+#define USH_CORR (sizeof(USHORT) == sizeof(long))
+#define UCH_CORR (sizeof(UCHAR)  == sizeof(long))
 
-#define UINT_CLASH (sizeof(UINT) == sizeof(long))
-
-#define MINLONG ((long)~(((ULONG)(~0L))>>1))
-
-#define CORRECT(u)       ((long)(u) + MINLONG)
+#define CORRECT(u)       ((long)(u) + LONG_MIN)
 #define CORR_IF(u, cond) ((cond) ? CORRECT(u) : (long)(u))
-
-#define PTRCMP(usrcmp, ptr1, ptr2) ( \
-   (usrcmp) ? (*(usrcmp))((void *)(ptr1), (void *)(ptr2)) \
-            :    strcmp  ((char *)(ptr1), (char *)(ptr2)) \
-)
-
-#define BAL   0
-#define LEFT  1
-#define RIGHT 2
 
 typedef enum avl_unbal {
    LEFTUNBAL,
@@ -157,434 +261,671 @@ typedef enum avl_depth {
 } DEPTH;
 
 typedef enum avl_ins {
-   NOTINS,
+   NOT_INS,
    INS,
-   DEEPER
+   INS_DEEPER
 } INS_T;
 
-#define LONG_ALIGNED_SIZE(obj) ((sizeof(obj)+sizeof(long)-1)&~(sizeof(long)-1))
+#define PTRADD(ptr, offs) ((void *)((char *)(ptr) + (offs)))
+#define PTRSUB(ptr, offs) ((void *)((char *)(ptr) - (offs)))
 
-#define SIZEOF_NODE  LONG_ALIGNED_SIZE(NODE)
-#define SIZEOF_TREE  LONG_ALIGNED_SIZE(TREE)
-#define SIZEOF_PATH  LONG_ALIGNED_SIZE(PATH)
+#define PTRPUSH(list, ptr) ( \
+   *(void **)(ptr) = (list), \
+            (list) = (ptr) \
+)
+#define PTRPOP(list, ptr) ( \
+   (ptr)  = (list), \
+   (list) = *(void **)(ptr) \
+)
 
-#define NODE_LIST     0
-#define TREE_LIST     (NODE_LIST + (SIZEOF_NODE != SIZEOF_TREE))
-#define PATH_LIST     (TREE_LIST + 1)
-#define N_FREE_LISTS  (PATH_LIST + 1)
+#define CMP(usrcmp, key, data, keyoffs, ind) ( \
+   (ind) ? (*(usrcmp))((key), *(void **)PTRADD((data), (keyoffs))) \
+         : (*(usrcmp))((key),           PTRADD((data), (keyoffs))) \
+)
+#define TAILCMP(keytail, data, keyoffs, ind) ( \
+   (ind) ? strcmp((keytail), *(char **)PTRADD((data), (keyoffs)) + sizeof(long)) \
+         : strcmp((keytail),  (char  *)PTRADD((data), (keyoffs)) + sizeof(long)) \
+)
 
-#ifndef AVL_PREALLOC_BYTES
-#define AVL_PREALLOC_BYTES  0x10000
-#endif
-#ifndef AVL_MALLOC_BYTES
-#define AVL_MALLOC_BYTES    0x10000
-#endif
+#define AVL_FREE_AND_NULL(ptr) (AVL_FREE(ptr), (ptr) = NULL)
 
-#define PREALLOC_LONGS ((AVL_PREALLOC_BYTES - 16) / sizeof(long))
-#define PREALLOC_SIZE  (PREALLOC_LONGS            * sizeof(long))
-#define MALLOC_LONGS   ((AVL_MALLOC_BYTES   - 32) / sizeof(long))
-#define MALLOC_SIZE    (MALLOC_LONGS              * sizeof(long))
+#define SIZEOF_P   (sizeof(void *))
+#define SIZEOF_L   (sizeof(long))
+#define SIZEOF_I   (sizeof(int))
+#define SIZEOF_P_L (MAX(SIZEOF_P, SIZEOF_L))
+#define SIZEOF_P_I (MAX(SIZEOF_P, SIZEOF_I))
 
-static long Prealloc[PREALLOC_LONGS];
+/*===========================================================================*/
 
-static void  *Free_List[N_FREE_LISTS]; /* init to 0 by C */
-static char  *Avail_Base = (char *)Prealloc;
-static size_t Avail_Size = PREALLOC_SIZE;
-
-/*---------------------------------------------------------------------------*/
-
-static void *get_memory(size_t sizeof_obj)
+static int floatcmp(void *p1, void *p2)
 {
-   if (sizeof_obj > SIZEOF_NODE) {
-      while (Avail_Size >= SIZEOF_NODE) {
-         char *base = Avail_Base + (Avail_Size -= SIZEOF_NODE);
-         *(void **)base = Free_List[NODE_LIST];
-                          Free_List[NODE_LIST] = (void *)base;
-      }
-   }
-   Avail_Base = (char *)malloc(MALLOC_SIZE);
-   if (Avail_Base) {
-      Avail_Size = MALLOC_SIZE - sizeof_obj;
-      return (void *)(Avail_Base + Avail_Size);
-   } else {
-      Avail_Size = 0;
-      return NULL;
-   }
+   float  *f1 = p1, *f2 = p2;
+   return *f1 > *f2 ? 1 : (*f1 < *f2 ? -1 : 0);
 }
 
 /*---------------------------------------------------------------------------*/
 
-#define ALLOC_OBJ(ptr, ptr_type, sizeof_obj, free_list) do { \
-   if (Free_List[free_list]) { \
-      (ptr) = (ptr_type)Free_List[free_list]; \
-                        Free_List[free_list] = *(void **)(ptr); \
-   } else if (Avail_Size >= sizeof_obj) { \
-      (ptr) = (ptr_type)(Avail_Base + (Avail_Size -= sizeof_obj)); \
-   } else { \
-      (ptr) = (ptr_type)get_memory(sizeof_obj); \
-   } \
-} while(0)
-
-#define FREE_OBJ(ptr, free_list) do { \
-   *(void **)(ptr) = Free_List[free_list]; \
-                     Free_List[free_list] = (void *)(ptr); \
-} while(0)
-
-#define ALLOC_NODE(node) ALLOC_OBJ((node), NODE *, SIZEOF_NODE, NODE_LIST)
-#define ALLOC_TREE(tree) ALLOC_OBJ((tree), TREE *, SIZEOF_TREE, TREE_LIST)
-#define ALLOC_PATH(path) ALLOC_OBJ((path), PATH *, SIZEOF_PATH, PATH_LIST)
-
-#define FREE_NODE(node)  FREE_OBJ((node), NODE_LIST)
-#define FREE_TREE(tree)  FREE_OBJ((tree), TREE_LIST)
-#define FREE_PATH(path)  FREE_OBJ((path), PATH_LIST)
+static int doublecmp(void *p1, void *p2)
+{
+   double *d1 = p1, *d2 = p2;
+   return *d1 > *d2 ? 1 : (*d1 < *d2 ? -1 : 0);
+}
 
 /*===========================================================================*/
 
 TREE *avl_tree(int treetype, size_t keyoffs, CMPFUN usrcmp)
 {
    TREE *tree;
-   int   keyinfo;
+   char bits;
 
-   if (sizeof(void *) != sizeof(long)) {
+   if (sizeof(void *) != sizeof(char *)) {
       return NULL;
    }
-   keyinfo = treetype << 2;
-   switch (treetype & ~AVL_DUP) {
-   CASE AVL_USR: keyinfo |= USR_CMP;
-   CASE AVL_MBR: keyinfo |= USR_CMP;
-   CASE AVL_CHA: keyinfo |= STR_CMP;
-   CASE AVL_PTR: keyinfo |= USR_CMP;
-   CASE AVL_STR: keyinfo |= STR_CMP;
-   CASE AVL_LNG: keyinfo |= VAL_CMP;
-   CASE AVL_INT: keyinfo |= VAL_CMP;
-   CASE AVL_SHT: keyinfo |= VAL_CMP;
-   CASE AVL_SCH: keyinfo |= VAL_CMP;
-   CASE AVL_ULN: keyinfo |= COR_CMP;
-   CASE AVL_UIN: keyinfo |= UINT_CLASH ? COR_CMP : VAL_CMP;
-   CASE AVL_USH: keyinfo |= VAL_CMP;
-   CASE AVL_UCH: keyinfo |= VAL_CMP;
+   if (keyoffs > USHRT_MAX || (treetype >= AVL_CHARS) != !usrcmp) {
+      return NULL;
+   }
+   switch (treetype >> 1) {
+   CASE USR_KEY: bits = (X_USR_CMP << 1) | (treetype & 1);
+   CASE MBR_KEY: bits = ((keyoffs ? X_MBR_CMP : X_USR_CMP) << 1) | (treetype & 1);
+   CASE PTR_KEY: bits = (X_PTR_CMP << 1) | (treetype & 1);
+   CASE CHA_KEY: bits = (L_CHA_CMP << 1) | (treetype & 1);
+   CASE STR_KEY: bits = (L_STR_CMP << 1) | (treetype & 1);
+   CASE LNG_KEY: bits = (L_VAL_CMP << 1) | (treetype & 1);
+   CASE INT_KEY: bits = (L_VAL_CMP << 1) | (treetype & 1);
+   CASE SHT_KEY: bits = (L_VAL_CMP << 1) | (treetype & 1);
+   CASE SCH_KEY: bits = (L_VAL_CMP << 1) | (treetype & 1);
+   CASE ULN_KEY: bits = (L_COR_CMP << 1) | (treetype & 1);
+   CASE UIN_KEY: bits = ((UIN_CORR ? L_COR_CMP : L_VAL_CMP) << 1) | (treetype & 1);
+   CASE USH_KEY: bits = ((USH_CORR ? L_COR_CMP : L_VAL_CMP) << 1) | (treetype & 1);
+   CASE UCH_KEY: bits = ((UCH_CORR ? L_COR_CMP : L_VAL_CMP) << 1) | (treetype & 1);
+   CASE FLT_KEY:
+      if (avl_has_fast_floats())  { bits = (L_VAL_CMP << 1) | (treetype & 1); }
+      else { usrcmp =  floatcmp;    bits = (X_MBR_CMP << 1) | (treetype & 1); }
+   CASE DBL_KEY:
+      if (avl_has_fast_doubles()) { bits = (L_VAL_CMP << 1) | (treetype & 1); }
+      else { usrcmp =  doublecmp;   bits = (X_MBR_CMP << 1) | (treetype & 1); }
    DEFAULT:
       return NULL;
    }
-   ALLOC_TREE(tree);
-   if ( !tree) {
-      return NULL;
-   }
-   tree->root = NULL;
-   tree->keyinfo = (USHORT)keyinfo;
-   tree->keyoffs = (USHORT)keyoffs;
+   tree = AVL_MALLOC(sizeof(*tree));
+   if ( !tree) return NULL;
+   tree->root    = NULL;
    tree->usrcmp  = usrcmp;
-   tree->nodes   = 0L;
    tree->path    = NULL;
-
+   tree->unused  = NULL;
+   tree->store   = NULL;
+   tree->nodes   = 0;
+   tree->alloc   = 0;
+   tree->avail   = 0;
+   tree->keyoffs = (USHORT)keyoffs;
+   tree->bits    = bits;
+   tree->type    = (char)treetype;
    return tree;
 }
 
 /*===========================================================================*/
 
-static DEPTH rebalance(NODE **rootaddr, UNBAL unbal)
+static long l_key_of(char *str, char **p_keytail)
 {
-   NODE *root = *rootaddr;
-   NODE *newroot;
-   NODE *half;
+   char *c;
+   int   o;
+   long  key = 0L;
 
-   if (unbal == LEFTUNBAL) {
-      switch (root->left->bal) {
-      CASE LEFT: /* simple rotation, tree depth decreased */
-         newroot = root->left;
-         root->left = newroot->right;
-         root->bal  = BAL;
-         newroot->right = root;
-         newroot->bal   = BAL;
-         *rootaddr = newroot;
-         return LESS;
-
-      CASE BAL: /* simple rotation, tree depth unchanged */
-         newroot = root->left;
-         root->left = newroot->right;
-         root->bal  = LEFT;
-         newroot->right = root;
-         newroot->bal   = RIGHT;
-         *rootaddr = newroot;
-         return SAME;
-
-      CASE RIGHT: /* double rotation */
-         half    = root->left;
-         newroot = half->right;
-         root->left  = newroot->right;
-         half->right = newroot->left;
-         switch (newroot->bal) {
-         CASE BAL:
-            root->bal = BAL;
-            half->bal = BAL;
-         CASE LEFT:
-            root->bal = RIGHT;
-            half->bal = BAL;
-         CASE RIGHT:
-            root->bal = BAL;
-            half->bal = LEFT;
-         }
-         newroot->left  = half;
-         newroot->right = root;
-         newroot->bal   = BAL;
-         *rootaddr = newroot;
-         return LESS;
+   o = (int)(sizeof(long) - 1) * CHAR_BIT;
+   for (c = str; *c; c++) {
+      key |= (long)(UCHAR)*c << o;
+      if (o == 0) {
+         if (p_keytail) *p_keytail = str + sizeof(long);
+         return CORRECT(key);
       }
-   } else {
-      switch (root->right->bal) {
-      CASE RIGHT: /* simple rotation, tree depth decreased */
-         newroot = root->right;
-         root->right = newroot->left;
-         root->bal   = BAL;
-         newroot->left = root;
-         newroot->bal  = BAL;
-         *rootaddr = newroot;
-         return LESS;
-
-      CASE BAL: /* simple rotation, tree depth unchanged */
-         newroot = root->right;
-         root->right = newroot->left;
-         root->bal   = RIGHT;
-         newroot->left = root;
-         newroot->bal  = LEFT;
-         *rootaddr = newroot;
-         return SAME;
-
-      CASE LEFT: /* double rotation */
-         half    = root->right;
-         newroot = half->left;
-         root->right = newroot->left;
-         half->left  = newroot->right;
-         switch (newroot->bal) {
-         CASE BAL:
-            root->bal = BAL;
-            half->bal = BAL;
-         CASE RIGHT:
-            root->bal = LEFT;
-            half->bal = BAL;
-         CASE LEFT:
-            root->bal = BAL;
-            half->bal = RIGHT;
-         }
-         newroot->right = half;
-         newroot->left  = root;
-         newroot->bal   = BAL;
-         *rootaddr = newroot;
-         return LESS;
-      }
+      o -= CHAR_BIT;
    }
-   assert( !"balanced subtrees");
-   return -1;
-}
-
-/*===========================================================================*/
-
-static INS_T insert_ptr(NODE **rootaddr, NODE *node, CMPFUN usrcmp, bool dup)
-{
-   NODE *root = *rootaddr;
-   int   cmp;
-   INS_T ins;
-
-   cmp = PTRCMP(usrcmp, node->key.ptr, root->key.ptr);
-   if (cmp < 0) {
-      if (root->left) {
-         ins = insert_ptr(&root->left, node, usrcmp, dup);
-      } else {
-         root->left = node;
-         ins = DEEPER;
-      }
-      switch (ins) {
-      CASE DEEPER:
-         switch (root->bal) {
-         CASE RIGHT:
-            root->bal = BAL;
-            return INS;
-         CASE BAL:
-            root->bal = LEFT;
-            return DEEPER;
-         CASE LEFT:
-            return rebalance(rootaddr, LEFTUNBAL) == LESS ? INS : DEEPER;
-         }
-      CASE INS:
-         return INS;
-      CASE NOTINS:
-         return NOTINS;
-      }
-   } else if (cmp > 0 || dup) {
-      if (root->right) {
-         ins = insert_ptr(&root->right, node, usrcmp, dup);
-      } else {
-         root->right = node;
-         ins = DEEPER;
-      }
-      switch (ins) {
-      CASE DEEPER:
-         switch (root->bal) {
-         CASE LEFT:
-            root->bal = BAL;
-            return INS;
-         CASE BAL:
-            root->bal = RIGHT;
-            return DEEPER;
-         CASE RIGHT:
-            return rebalance(rootaddr, RIGHTUNBAL) == LESS ? INS : DEEPER;
-         }
-      CASE INS:
-         return INS;
-      CASE NOTINS:
-         return NOTINS;
-      }
-   }
-   return NOTINS;
+   if (p_keytail) *p_keytail = NULL;
+   return CORRECT(key);
 }
 
 /*---------------------------------------------------------------------------*/
 
-static INS_T insert_val(NODE **rootaddr, NODE *node, bool dup)
+static long flt2lng(float f)
 {
-   NODE *root = *rootaddr;
-   INS_T ins;
+   union { float f; long l; int i; } u;
 
-   if (node->key.val < root->key.val) {
-      if (root->left) {
-         ins = insert_val(&root->left, node, dup);
-      } else {
-         root->left = node;
-         ins = DEEPER;
-      }
-      switch (ins) {
-      CASE DEEPER:
-         switch (root->bal) {
-         CASE RIGHT:
-            root->bal = BAL;
-            return INS;
-         CASE BAL:
-            root->bal = LEFT;
-            return DEEPER;
-         CASE LEFT:
-            return rebalance(rootaddr, LEFTUNBAL) == LESS ? INS : DEEPER;
+   if (f > 0) {
+      u.f = f;
+      return sizeof(float) == sizeof(long) ?  u.l :  u.i;
+   } else if (f < 0) {
+      u.f = -f;
+      return sizeof(float) == sizeof(long) ? -u.l : -u.i;
+   } else {
+      return 0; /* avoid -0.0 */
+   }
+}
+
+/*---------------------------------------------------------------------------*/
+
+static long dbl2lng(double d)
+{
+   union { double d; long l; int i; } u;
+
+   if (d > 0) {
+      u.d = d;
+      return sizeof(double) == sizeof(long) ?  u.l :  u.i;
+   } else if (d < 0) {
+      u.d = -d;
+      return sizeof(double) == sizeof(long) ? -u.l : -u.i;
+   } else {
+      return 0; /* avoid -0.0 */
+   }
+}
+
+/*---------------------------------------------------------------------------*/
+
+bool avl_has_fast_floats(void)
+{
+   return (sizeof(float) == sizeof(long) || sizeof(float) == sizeof(int)) &&
+          flt2lng(1.00390625F) == 0x3F808000L;
+}
+
+/*---------------------------------------------------------------------------*/
+
+bool avl_has_fast_doubles(void)
+{
+#if LONG_MAX >= 0x7FFFFFFFFFFFFFFF
+   return (sizeof(double) == sizeof(long) || sizeof(double) == sizeof(int)) &&
+          dbl2lng(1.000000476837158203125) == 0x3FF0000080000000L;
+#else
+   return false;
+#endif
+}
+
+/*===========================================================================*/
+
+static DEPTH rebalance_x(X_NODE **p_root, UNBAL unbal)
+{
+   X_NODE *root        = PTR_OF   (*p_root);
+   UINTPTR root_deeper = IS_DEEPER(*p_root);
+   X_NODE *root_left, *root_right, *half, *newroot;
+
+   if (unbal == LEFTUNBAL) {
+      root_left = PTR_OF(root->left);
+      if (IS_DEEPER(root_left->left)) {
+         /* simple rotation, tree depth decreased */
+         newroot = root_left;
+         root->leftval  = newroot->rightval & ~DEEPER;
+         root->rightval &= ~DEEPER;
+         newroot->right = root;
+         newroot->leftval &= ~DEEPER;
+         *p_root = PTRADD(newroot, root_deeper);
+         return LESS;
+      } else if (IS_DEEPER(root_left->right)) {
+         /* double rotation */
+         half    = root_left;
+         newroot = PTR_OF(half->right);
+         root->left  = newroot->right;
+         half->right = newroot->left;
+         if (IS_DEEPER(newroot->left)) {
+            root->rightval |=  DEEPER;
+            root->leftval  &= ~DEEPER;
+            half->rightval &= ~DEEPER;
+         } else if (IS_DEEPER(newroot->right)) {
+            root->rightval &= ~DEEPER;
+            root->leftval  &= ~DEEPER;
+            half->rightval &= ~DEEPER;
+            half->leftval  |=  DEEPER;
+         } else {
+            root->rightval &= ~DEEPER;
+            root->leftval  &= ~DEEPER;
+            half->rightval &= ~DEEPER;
          }
-      CASE INS:
-         return INS;
-      CASE NOTINS:
-         return NOTINS;
-      }
-   } else if (node->key.val > root->key.val || dup) {
-      if (root->right) {
-         ins = insert_val(&root->right, node, dup);
+         newroot->left  = half;
+         newroot->right = root;
+         *p_root = PTRADD(newroot, root_deeper);
+         return LESS;
       } else {
-         root->right = node;
-         ins = DEEPER;
+         /* simple rotation, tree depth unchanged */
+         newroot = root_left;
+         root->leftval = newroot->rightval | DEEPER;
+         root->rightval &= ~DEEPER;
+         newroot->rightval = VAL_OF(root) | DEEPER;
+         newroot->leftval &= ~DEEPER;
+         *p_root = PTRADD(newroot, root_deeper);
+         return SAME;
       }
-      switch (ins) {
-      CASE DEEPER:
-         switch (root->bal) {
-         CASE LEFT:
-            root->bal = BAL;
-            return INS;
-         CASE BAL:
-            root->bal = RIGHT;
-            return DEEPER;
-         CASE RIGHT:
-            return rebalance(rootaddr, RIGHTUNBAL) == LESS ? INS : DEEPER;
+   } else {
+      root_right = PTR_OF(root->right);
+      if (IS_DEEPER(root_right->right)) {
+         /* simple rotation, tree depth decreased */
+         newroot = root_right;
+         root->rightval = newroot->leftval & ~DEEPER;
+         root->leftval &= ~DEEPER;
+         newroot->left = root;
+         newroot->rightval &= ~DEEPER;
+         *p_root = PTRADD(newroot, root_deeper);
+         return LESS;
+      } else if (IS_DEEPER(root_right->left)) {
+         /* double rotation */
+         half    = root_right;
+         newroot = PTR_OF(half->left);
+         root->right = newroot->left;
+         half->left  = newroot->right;
+         if (IS_DEEPER(newroot->right)) {
+            root->leftval  |=  DEEPER;
+            root->rightval &= ~DEEPER;
+            half->leftval  &= ~DEEPER;
+         } else if (IS_DEEPER(newroot->left)) {
+            root->leftval  &= ~DEEPER;
+            root->rightval &= ~DEEPER;
+            half->leftval  &= ~DEEPER;
+            half->rightval |=  DEEPER;
+         } else {
+            root->leftval  &= ~DEEPER;
+            root->rightval &= ~DEEPER;
+            half->leftval  &= ~DEEPER;
          }
-      CASE INS:
-         return INS;
-      CASE NOTINS:
-         return NOTINS;
+         newroot->right = half;
+         newroot->left  = root;
+         *p_root = PTRADD(newroot, root_deeper);
+         return LESS;
+      } else {
+         /* simple rotation, tree depth unchanged */
+         newroot = root_right;
+         root->rightval = newroot->leftval | DEEPER;
+         root->leftval &= ~DEEPER;
+         newroot->leftval = VAL_OF(root) | DEEPER;
+         newroot->rightval &= ~DEEPER;
+         *p_root = PTRADD(newroot, root_deeper);
+         return SAME;
       }
    }
-   return NOTINS;
+}
+
+/*---------------------------------------------------------------------------*/
+
+static DEPTH rebalance_l(L_NODE **p_root, UNBAL unbal)
+{
+   L_NODE *root        = PTR_OF   (*p_root);
+   UINTPTR root_deeper = IS_DEEPER(*p_root);
+   L_NODE *root_left, *root_right, *half, *newroot;
+
+   if (unbal == LEFTUNBAL) {
+      root_left = PTR_OF(root->left);
+      if (IS_DEEPER(root_left->left)) {
+         /* simple rotation, tree depth decreased */
+         newroot = root_left;
+         root->leftval  = newroot->rightval & ~DEEPER;
+         root->rightval &= ~DEEPER;
+         newroot->right = root;
+         newroot->leftval &= ~DEEPER;
+         *p_root = PTRADD(newroot, root_deeper);
+         return LESS;
+      } else if (IS_DEEPER(root_left->right)) {
+         /* double rotation */
+         half    = root_left;
+         newroot = PTR_OF(half->right);
+         root->left  = newroot->right;
+         half->right = newroot->left;
+         if (IS_DEEPER(newroot->left)) {
+            root->rightval |=  DEEPER;
+            root->leftval  &= ~DEEPER;
+            half->rightval &= ~DEEPER;
+         } else if (IS_DEEPER(newroot->right)) {
+            root->rightval &= ~DEEPER;
+            root->leftval  &= ~DEEPER;
+            half->rightval &= ~DEEPER;
+            half->leftval  |=  DEEPER;
+         } else {
+            root->rightval &= ~DEEPER;
+            root->leftval  &= ~DEEPER;
+            half->rightval &= ~DEEPER;
+         }
+         newroot->left  = half;
+         newroot->right = root;
+         *p_root = PTRADD(newroot, root_deeper);
+         return LESS;
+      } else {
+         /* simple rotation, tree depth unchanged */
+         newroot = root_left;
+         root->leftval = newroot->rightval | DEEPER;
+         root->rightval &= ~DEEPER;
+         newroot->rightval = VAL_OF(root) | DEEPER;
+         newroot->leftval &= ~DEEPER;
+         *p_root = PTRADD(newroot, root_deeper);
+         return SAME;
+      }
+   } else {
+      root_right = PTR_OF(root->right);
+      if (IS_DEEPER(root_right->right)) {
+         /* simple rotation, tree depth decreased */
+         newroot = root_right;
+         root->rightval = newroot->leftval & ~DEEPER;
+         root->leftval &= ~DEEPER;
+         newroot->left = root;
+         newroot->rightval &= ~DEEPER;
+         *p_root = PTRADD(newroot, root_deeper);
+         return LESS;
+      } else if (IS_DEEPER(root_right->left)) {
+         /* double rotation */
+         half    = root_right;
+         newroot = PTR_OF(half->left);
+         root->right = newroot->left;
+         half->left  = newroot->right;
+         if (IS_DEEPER(newroot->right)) {
+            root->leftval  |=  DEEPER;
+            root->rightval &= ~DEEPER;
+            half->leftval  &= ~DEEPER;
+         } else if (IS_DEEPER(newroot->left)) {
+            root->leftval  &= ~DEEPER;
+            root->rightval &= ~DEEPER;
+            half->leftval  &= ~DEEPER;
+            half->rightval |=  DEEPER;
+         } else {
+            root->leftval  &= ~DEEPER;
+            root->rightval &= ~DEEPER;
+            half->leftval  &= ~DEEPER;
+         }
+         newroot->right = half;
+         newroot->left  = root;
+         *p_root = PTRADD(newroot, root_deeper);
+         return LESS;
+      } else {
+         /* simple rotation, tree depth unchanged */
+         newroot = root_right;
+         root->rightval = newroot->leftval | DEEPER;
+         root->leftval &= ~DEEPER;
+         newroot->leftval = VAL_OF(root) | DEEPER;
+         newroot->rightval &= ~DEEPER;
+         *p_root = PTRADD(newroot, root_deeper);
+         return SAME;
+      }
+   }
+}
+
+/*===========================================================================*/
+
+static INS_T insert_x(X_NODE **p_root, X_NODE *node, void *x_key, UINT keyoffs, bool ind, CMPFUN usrcmp, bool dup)
+{
+   X_NODE *root = PTR_OF(*p_root);
+   int     cmp;
+   INS_T   ins;
+
+   cmp = CMP(usrcmp, x_key, root->data, keyoffs, ind);
+   if (cmp < 0) {
+      if (root->left) {
+         ins = insert_x(&root->left, node, x_key, keyoffs, ind, usrcmp, dup);
+      } else {
+         root->left = PTRADD(node, IS_DEEPER(root->left));
+         ins = INS_DEEPER;
+      }
+      switch (ins) {
+      CASE INS_DEEPER:
+         if (IS_DEEPER(root->left)) {
+            return rebalance_x(p_root, LEFTUNBAL) == LESS ? INS : INS_DEEPER;
+         } else if (IS_DEEPER(root->right)) {
+            root->rightval &= ~DEEPER;
+            return INS;
+         } else {
+            root->leftval |= DEEPER;
+            return INS_DEEPER;
+         }
+      CASE INS:
+         return INS;
+      DEFAULT:
+         return NOT_INS;
+      }
+   } else if (cmp > 0 || dup) {
+      if (root->right) {
+         ins = insert_x(&root->right, node, x_key, keyoffs, ind, usrcmp, dup);
+      } else {
+         root->right = PTRADD(node, IS_DEEPER(root->right));
+         ins = INS_DEEPER;
+      }
+      switch (ins) {
+      CASE INS_DEEPER:
+         if (IS_DEEPER(root->right)) {
+            return rebalance_x(p_root, RIGHTUNBAL) == LESS ? INS : INS_DEEPER;
+         } else if (IS_DEEPER(root->left)) {
+            root->leftval &= ~DEEPER;
+            return INS;
+         } else {
+            root->rightval |= DEEPER;
+            return INS_DEEPER;
+         }
+      CASE INS:
+         return INS;
+      DEFAULT:
+         return NOT_INS;
+      }
+   } else {
+      return NOT_INS;
+   }
+}
+
+/*---------------------------------------------------------------------------*/
+
+static INS_T insert_l(L_NODE **p_root, L_NODE *node, char *keytail, UINT keyoffs, bool ind, bool dup)
+{
+   L_NODE *root = PTR_OF(*p_root);
+   INS_T   ins;
+
+   if (node->key < root->key) {
+      insert_lt:
+      if (root->left) {
+         ins = insert_l(&root->left, node, keytail, keyoffs, ind, dup);
+      } else {
+         root->left = PTRADD(node, IS_DEEPER(root->left));
+         ins = INS_DEEPER;
+      }
+      switch (ins) {
+      CASE INS_DEEPER:
+         if (IS_DEEPER(root->left)) {
+            return rebalance_l(p_root, LEFTUNBAL) == LESS ? INS : INS_DEEPER;
+         } else if (IS_DEEPER(root->right)) {
+            root->rightval &= ~DEEPER;
+            return INS;
+         } else {
+            root->leftval |= DEEPER;
+            return INS_DEEPER;
+         }
+      CASE INS:
+         return INS;
+      DEFAULT:
+         return NOT_INS;
+      }
+   } else if (node->key > root->key) {
+      insert_gt_or_dup:
+      if (root->right) {
+         ins = insert_l(&root->right, node, keytail, keyoffs, ind, dup);
+      } else {
+         root->right = PTRADD(node, IS_DEEPER(root->right));
+         ins = INS_DEEPER;
+      }
+      switch (ins) {
+      CASE INS_DEEPER:
+         if (IS_DEEPER(root->right)) {
+            return rebalance_l(p_root, RIGHTUNBAL) == LESS ? INS : INS_DEEPER;
+         } else if (IS_DEEPER(root->left)) {
+            root->leftval &= ~DEEPER;
+            return INS;
+         } else {
+            root->rightval |= DEEPER;
+            return INS_DEEPER;
+         }
+      CASE INS:
+         return INS;
+      DEFAULT:
+         return NOT_INS;
+      }
+   } else if ( !keytail) {
+      if (dup) {
+         goto insert_gt_or_dup;
+      } else {
+         return NOT_INS;
+      }
+   } else {
+      int cmp = TAILCMP(keytail, root->data, keyoffs, ind);
+      if (cmp < 0) {
+         goto insert_lt;
+      } else if (cmp > 0 || dup) {
+         goto insert_gt_or_dup;
+      } else {
+         return NOT_INS;
+      }
+   }
+}
+
+/*---------------------------------------------------------------------------*/
+
+static X_NODE *alloc_node_x(TREE *tree)
+{
+   X_NODE *x_node;
+   void   *old_alloc_base, *new_alloc_base;
+   int     increment;
+
+   increment = (tree->alloc >> AVL_NODE_INCREMENT_SHIFT) + 1;
+   if (increment > AVL_NODE_INCREMENT_MAX) increment = AVL_NODE_INCREMENT_MAX;
+   old_alloc_base = tree->x_store ? PTRSUB(tree->x_store, SIZEOF_P) : NULL;
+   new_alloc_base = AVL_MALLOC(SIZEOF_P + increment * sizeof(X_NODE));
+   if ( !new_alloc_base) return NULL;
+   tree->alloc += increment;
+   tree->avail = increment - 1;
+   *(void **)new_alloc_base = old_alloc_base;
+   x_node = ((X_NODE *)PTRADD(new_alloc_base, SIZEOF_P)) + (increment - 1);
+   tree->x_store = x_node;
+   return x_node;
+}
+
+/*---------------------------------------------------------------------------*/
+
+static L_NODE *alloc_node_l(TREE *tree)
+{
+   L_NODE *l_node;
+   void   *old_alloc_base, *new_alloc_base;
+   int     increment;
+
+   increment = (tree->alloc >> AVL_NODE_INCREMENT_SHIFT) + 1;
+   if (increment > AVL_NODE_INCREMENT_MAX) increment = AVL_NODE_INCREMENT_MAX;
+   old_alloc_base = tree->l_store ? PTRSUB(tree->l_store, SIZEOF_P_L) : NULL;
+   new_alloc_base = AVL_MALLOC(SIZEOF_P_L + increment * sizeof(L_NODE));
+   if ( !new_alloc_base) return NULL;
+   tree->alloc += increment;
+   tree->avail = increment - 1;
+   *(void **)new_alloc_base = old_alloc_base;
+   l_node = ((L_NODE *)PTRADD(new_alloc_base, SIZEOF_P_L)) + (increment - 1);
+   tree->l_store = l_node;
+   return l_node;
 }
 
 /*---------------------------------------------------------------------------*/
 
 bool avl_insert(TREE *tree, void *data)
 {
-   NODE *node;
-   int   keyinfo;
-   INS_T ins;
+   X_NODE *x_node;
+   L_NODE *l_node;
+   void   *x_key;
+   char   *keytail;
 
-   ALLOC_NODE(node);
-   if ( !node) {
+   if (tree->path) {
+      AVL_FREE_AND_NULL(tree->path);
+   }
+   if (tree->nodes < 0) {
       return false;
    }
-   node->data  = data;
-   node->left  = NULL;
-   node->right = NULL;
-   node->bal   = BAL;
-   keyinfo = tree->keyinfo;
-
-   switch (KEYTYPE(keyinfo)) {
-   CASE USR_KEY: node->key.ptr =          (void   *)((char *)data);
-   CASE MBR_KEY: node->key.ptr =          (void   *)((char *)data + tree->keyoffs);
-   CASE CHA_KEY: node->key.ptr =          (void   *)((char *)data + tree->keyoffs);
-   CASE PTR_KEY: node->key.ptr =         *(void  **)((char *)data + tree->keyoffs);
-   CASE STR_KEY: node->key.ptr =         *(void  **)((char *)data + tree->keyoffs);
-   CASE LNG_KEY: node->key.val =         *(long   *)((char *)data + tree->keyoffs);
-   CASE INT_KEY: node->key.val =         *(int    *)((char *)data + tree->keyoffs);
-   CASE SHT_KEY: node->key.val =         *(short  *)((char *)data + tree->keyoffs);
-   CASE SCH_KEY: node->key.val =         *(SCHAR  *)((char *)data + tree->keyoffs);
-   CASE ULN_KEY: node->key.val = CORRECT(*(ULONG  *)((char *)data + tree->keyoffs));
-   CASE UIN_KEY: node->key.val = CORR_IF(*(UINT   *)((char *)data + tree->keyoffs), UINT_CLASH);
-   CASE USH_KEY: node->key.val =         *(USHORT *)((char *)data + tree->keyoffs);
-   CASE UCH_KEY: node->key.val =         *(UCHAR  *)((char *)data + tree->keyoffs);
-   DEFAULT:
-      FREE_NODE(node);
-      return false;
-   }
-   if (tree->root) {
-      switch (LOCTYPE(keyinfo)) {
-      CASE USR_NODUP: ins = insert_ptr(&tree->root, node, tree->usrcmp, NODUP);
-      CASE STR_NODUP: ins = insert_ptr(&tree->root, node, NULL,         NODUP);
-      CASE COR_NODUP:
-      case VAL_NODUP: ins = insert_val(&tree->root, node,               NODUP);
-      CASE USR_DUP:   ins = insert_ptr(&tree->root, node, tree->usrcmp, DUP);
-      CASE STR_DUP:   ins = insert_ptr(&tree->root, node, NULL,         DUP);
-      CASE COR_DUP:
-      case VAL_DUP:   ins = insert_val(&tree->root, node,               DUP);
-      DEFAULT:        ins = NOTINS; assert( !"unexpected LOCTYPE");
+   if (IS_X(tree)) {
+      if (tree->unused) {
+         PTRPOP(tree->unused, x_node);
+      } else if (tree->avail) {
+         x_node = --tree->x_store;
+         tree->avail--;
+      } else {
+         x_node = alloc_node_x(tree);
+         if ( !x_node) return false;
       }
-      if (ins == NOTINS) {
-         FREE_NODE(node);
-         return false;
+      x_node->data  = data;
+      x_node->left  = NULL;
+      x_node->right = NULL;
+      switch (KEYTYPE(tree)) {
+      CASE USR_KEY: x_key = data;
+      CASE MBR_KEY:
+      case FLT_KEY:
+      case DBL_KEY: x_key =           PTRADD(data, tree->keyoffs);
+      CASE PTR_KEY: x_key = *(void **)PTRADD(data, tree->keyoffs);
+      DEFAULT: return false;
+      }
+      if (tree->x_root) {
+         if (insert_x(&tree->x_root, x_node, x_key, tree->keyoffs, IS_IND(tree), tree->usrcmp, IS_DUP(tree)) == NOT_INS) {
+            PTRPUSH(tree->unused, x_node);
+            return false;
+         }
+      } else {
+         tree->x_root = x_node;
       }
    } else {
-      tree->root = node;
+      if (tree->unused) {
+         PTRPOP(tree->unused, l_node);
+      } else if (tree->avail) {
+         l_node = --tree->l_store;
+         tree->avail--;
+      } else {
+         l_node = alloc_node_l(tree);
+         if ( !l_node) return false;
+      }
+      l_node->data  = data;
+      l_node->left  = NULL;
+      l_node->right = NULL;
+      keytail = NULL;
+      switch (KEYTYPE(tree)) {
+      CASE CHA_KEY: l_node->key = l_key_of( (char  *)PTRADD(data, tree->keyoffs), &keytail);
+      CASE STR_KEY: l_node->key = l_key_of(*(char **)PTRADD(data, tree->keyoffs), &keytail);
+      CASE LNG_KEY: l_node->key =          *(long  *)PTRADD(data, tree->keyoffs);
+      CASE INT_KEY: l_node->key =          *(int   *)PTRADD(data, tree->keyoffs);
+      CASE SHT_KEY: l_node->key =          *(short *)PTRADD(data, tree->keyoffs);
+      CASE SCH_KEY: l_node->key =          *(SCHAR *)PTRADD(data, tree->keyoffs);
+      CASE ULN_KEY: l_node->key =  CORRECT(*(ULONG *)PTRADD(data, tree->keyoffs));
+      CASE UIN_KEY: l_node->key =  CORR_IF(*(UINT  *)PTRADD(data, tree->keyoffs), UIN_CORR);
+      CASE USH_KEY: l_node->key =  CORR_IF(*(USHORT*)PTRADD(data, tree->keyoffs), USH_CORR);
+      CASE UCH_KEY: l_node->key =  CORR_IF(*(UCHAR *)PTRADD(data, tree->keyoffs), UCH_CORR);
+      CASE FLT_KEY: l_node->key =  flt2lng(*(float *)PTRADD(data, tree->keyoffs));
+      CASE DBL_KEY: l_node->key =  dbl2lng(*(double*)PTRADD(data, tree->keyoffs));
+      DEFAULT: return false;
+      }
+      if (tree->l_root) {
+         if (insert_l(&tree->l_root, l_node, keytail, tree->keyoffs, IS_IND(tree), IS_DUP(tree)) == NOT_INS) {
+            PTRPUSH(tree->unused, l_node);
+            return false;
+         }
+      } else {
+         tree->l_root = l_node;
+      }
    }
    tree->nodes++;
-   if (tree->path) {
-      FREE_PATH(tree->path);
-      tree->path = NULL;
-   }
    return true;
 }
 
 /*===========================================================================*/
 
-static NODE *leftmost(NODE **rootaddr, DEPTH *depth)
+static X_NODE *fetch_leftmost_x(X_NODE **p_root, DEPTH *depth)
 {
-   NODE *root = *rootaddr;
-   NODE *node;
+   X_NODE *root        = PTR_OF   (*p_root);
+   UINTPTR root_deeper = IS_DEEPER(*p_root);
+   X_NODE *node;
 
    if (root) {
       if (root->left) {
-         node = leftmost(&root->left, depth);
+         node = fetch_leftmost_x(&root->left, depth);
          if (*depth == LESS) {
             /* left subtree depth decreased */
-            switch (root->bal) {
-            CASE LEFT:
-               root->bal = BAL;
-            CASE BAL:
-               root->bal = RIGHT;
+            if (IS_DEEPER(root->rightval)) {
+               *depth = rebalance_x(p_root, RIGHTUNBAL);
+            } else if (IS_DEEPER(root->leftval)) {
+               root->leftval  &= ~DEEPER;
+            } else {
+               root->rightval |=  DEEPER;
                *depth = SAME;
-            CASE RIGHT:
-               *depth = rebalance(rootaddr, RIGHTUNBAL);
             }
          }
          return node;
       } else {
-         *rootaddr = root->right;
+         *p_root = PTRADD(PTR_OF(root->right), root_deeper);
          *depth = LESS;
          return root;
       }
@@ -596,633 +937,1113 @@ static NODE *leftmost(NODE **rootaddr, DEPTH *depth)
 
 /*---------------------------------------------------------------------------*/
 
-static NODE *remove_ptr(NODE **rootaddr, void *keyptr, CMPFUN usrcmp, bool dup, DEPTH *depth)
+static L_NODE *fetch_leftmost_l(L_NODE **p_root, DEPTH *depth)
 {
-   NODE *root = *rootaddr;
-   NODE *node;
-   int   cmp;
+   L_NODE *root        = PTR_OF   (*p_root);
+   UINTPTR root_deeper = IS_DEEPER(*p_root);
+   L_NODE *node;
 
-   cmp = PTRCMP(usrcmp, keyptr, root->key.ptr);
+   if (root) {
+      if (root->left) {
+         node = fetch_leftmost_l(&root->left, depth);
+         if (*depth == LESS) {
+            /* left subtree depth decreased */
+            if (IS_DEEPER(root->rightval)) {
+               *depth = rebalance_l(p_root, RIGHTUNBAL);
+            } else if (IS_DEEPER(root->leftval)) {
+               root->leftval  &= ~DEEPER;
+            } else {
+               root->rightval |=  DEEPER;
+               *depth = SAME;
+            }
+         }
+         return node;
+      } else {
+         *p_root = PTRADD(PTR_OF(root->right), root_deeper);
+         *depth = LESS;
+         return root;
+      }
+   } else {
+      *depth = SAME;
+      return NULL;
+   }
+}
+
+/*---------------------------------------------------------------------------*/
+
+static X_NODE *remove_x(X_NODE **p_root, void *x_key, UINT keyoffs, bool ind, CMPFUN usrcmp, bool dup, DEPTH *depth)
+{
+   X_NODE *root        = PTR_OF   (*p_root);
+   UINTPTR root_deeper = IS_DEEPER(*p_root);
+   X_NODE *node;
+   int     cmp;
+
+   cmp = CMP(usrcmp, x_key, root->data, keyoffs, ind);
    if (cmp < 0) {
       if ( !root->left) {
          return NULL;
       }
-      node = remove_ptr(&root->left, keyptr, usrcmp, dup, depth);
+      node = remove_x(&root->left, x_key, keyoffs, ind, usrcmp, dup, depth);
       if (node && *depth == LESS) {
          /* left subtree depth decreased */
-         switch (root->bal) {
-         CASE LEFT:
-            root->bal = BAL;
-         CASE BAL:
-            root->bal = RIGHT;
+         if (IS_DEEPER(root->right)) {
+            *depth = rebalance_x(p_root, RIGHTUNBAL);
+         } else if (IS_DEEPER(root->left)) {
+            root->leftval  &= ~DEEPER;
+         } else {
+            root->rightval |=  DEEPER;
             *depth = SAME;
-         CASE RIGHT:
-            *depth = rebalance(rootaddr, RIGHTUNBAL);
          }
       }
+      return node;
    } else if (cmp > 0) {
       if ( !root->right) {
          return NULL;
       }
-      node = remove_ptr(&root->right, keyptr, usrcmp, dup, depth);
+      node = remove_x(&root->right, x_key, keyoffs, ind, usrcmp, dup, depth);
       if (node && *depth == LESS) {
          /* right subtree depth decreased */
-         switch (root->bal) {
-         CASE RIGHT:
-            root->bal = BAL;
-         CASE BAL:
-            root->bal = LEFT;
+         if (IS_DEEPER(root->left)) {
+            *depth = rebalance_x(p_root, LEFTUNBAL);
+         } else if (IS_DEEPER(root->right)) {
+            root->rightval &= ~DEEPER;
+         } else {
+            root->leftval  |=  DEEPER;
             *depth = SAME;
-         CASE LEFT:
-            *depth = rebalance(rootaddr, LEFTUNBAL);
          }
       }
+      return node;
    } else {
-      if (dup && root->left
-              && (node = remove_ptr(&root->left, keyptr, usrcmp, dup, depth))) {
+      if (dup && root->left && (node = remove_x(&root->left, x_key, keyoffs, ind, usrcmp, dup, depth))) {
          if (*depth == LESS) {
             /* left subtree depth decreased */
-            switch (root->bal) {
-            CASE LEFT:
-               root->bal = BAL;
-            CASE BAL:
-               root->bal = RIGHT;
+            if (IS_DEEPER(root->right)) {
+               *depth = rebalance_x(p_root, RIGHTUNBAL);
+            } else if (IS_DEEPER(root->left)) {
+               root->leftval  &= ~DEEPER;
+            } else {
+               root->rightval |=  DEEPER;
                *depth = SAME;
-            CASE RIGHT:
-               *depth = rebalance(rootaddr, RIGHTUNBAL);
             }
          }
       } else {
          node = root;
          if ( !node->right) {
-            *rootaddr = node->left;
+            *p_root = PTRADD(PTR_OF(node->left), root_deeper);
             *depth = LESS;
          } else if ( !node->left) {
-            *rootaddr = node->right;
+            *p_root = PTRADD(PTR_OF(node->right), root_deeper);
             *depth = LESS;
          } else {
             /* replace by the leftmost node of the right subtree */
-            root = leftmost(&node->right, depth);
+            root = fetch_leftmost_x(&node->right, depth);
             root->left  = node->left;
             root->right = node->right;
             if (*depth == LESS) {
                /* right subtree depth decreased */
-               switch (node->bal) {
-               CASE RIGHT:
-                  root->bal = BAL;
-               CASE BAL:
-                  root->bal = LEFT;
+               if (IS_DEEPER(root->left)) {
+                  *depth = rebalance_x(&root, LEFTUNBAL);
+               } else if (IS_DEEPER(root->right)) {
+                  root->rightval &= ~DEEPER;
+               } else {
+                  root->leftval  |=  DEEPER;
                   *depth = SAME;
-               CASE LEFT:
-                  *depth = rebalance(&root, LEFTUNBAL);
                }
             } else {
-               root->bal = node->bal;
                *depth = SAME;
             }
-            *rootaddr = root;
+            *p_root = PTRADD(root, root_deeper);
          }
       }
+      return node;
    }
-   return node;
 }
 
 /*---------------------------------------------------------------------------*/
 
-static NODE *remove_val(NODE **rootaddr, long keyval, bool dup, DEPTH *depth)
+static L_NODE *remove_l(L_NODE **p_root, long l_key, char *keytail, UINT keyoffs, bool ind, bool dup, DEPTH *depth)
 {
-   NODE *root = *rootaddr;
-   NODE *node;
+   L_NODE *root        = PTR_OF   (*p_root);
+   UINTPTR root_deeper = IS_DEEPER(*p_root);
+   L_NODE *node;
 
-   if (keyval < root->key.val) {
+   if (l_key < root->key) {
+      remove_lt:
       if ( !root->left) {
          return NULL;
       }
-      node = remove_val(&root->left, keyval, dup, depth);
+      node = remove_l(&root->left, l_key, keytail, keyoffs, ind, dup, depth);
       if (node && *depth == LESS) {
          /* left subtree depth decreased */
-         switch (root->bal) {
-         CASE LEFT:
-            root->bal = BAL;
-         CASE BAL:
-            root->bal = RIGHT;
+         if (IS_DEEPER(root->right)) {
+            *depth = rebalance_l(p_root, RIGHTUNBAL);
+         } else if (IS_DEEPER(root->left)) {
+            root->leftval  &= ~DEEPER;
+         } else {
+            root->rightval |=  DEEPER;
             *depth = SAME;
-         CASE RIGHT:
-            *depth = rebalance(rootaddr, RIGHTUNBAL);
          }
       }
-   } else if (keyval > root->key.val) {
+      return node;
+   } else if (l_key > root->key) {
+      remove_gt:
       if ( !root->right) {
          return NULL;
       }
-      node = remove_val(&root->right, keyval, dup, depth);
+      node = remove_l(&root->right, l_key, keytail, keyoffs, ind, dup, depth);
       if (node && *depth == LESS) {
          /* right subtree depth decreased */
-         switch (root->bal) {
-         CASE RIGHT:
-            root->bal = BAL;
-         CASE BAL:
-            root->bal = LEFT;
+         if (IS_DEEPER(root->left)) {
+            *depth = rebalance_l(p_root, LEFTUNBAL);
+         } else if (IS_DEEPER(root->right)) {
+            root->rightval &= ~DEEPER;
+         } else {
+            root->leftval  |=  DEEPER;
             *depth = SAME;
-         CASE LEFT:
-            *depth = rebalance(rootaddr, LEFTUNBAL);
          }
       }
-   } else {
-      if (dup && root->left
-              && (node = remove_val(&root->left, keyval, dup, depth))) {
+      return node;
+   } else if ( !keytail) {
+      remove_eq:
+      if (dup && root->left && (node = remove_l(&root->left, l_key, keytail, keyoffs, ind, dup, depth))) {
          if (*depth == LESS) {
             /* left subtree depth decreased */
-            switch (root->bal) {
-            CASE LEFT:
-               root->bal = BAL;
-            CASE BAL:
-               root->bal = RIGHT;
+            if (IS_DEEPER(root->right)) {
+               *depth = rebalance_l(p_root, RIGHTUNBAL);
+            } else if (IS_DEEPER(root->left)) {
+               root->leftval  &= ~DEEPER;
+            } else {
+               root->rightval |=  DEEPER;
                *depth = SAME;
-            CASE RIGHT:
-               *depth = rebalance(rootaddr, RIGHTUNBAL);
             }
          }
       } else {
          node = root;
          if ( !node->right) {
-            *rootaddr = node->left;
+            *p_root = PTRADD(PTR_OF(node->left), root_deeper);
             *depth = LESS;
          } else if ( !node->left) {
-            *rootaddr = node->right;
+            *p_root = PTRADD(PTR_OF(node->right), root_deeper);
             *depth = LESS;
          } else {
             /* replace by the leftmost node of the right subtree */
-            root = leftmost(&node->right, depth);
+            root = fetch_leftmost_l(&node->right, depth);
             root->left  = node->left;
             root->right = node->right;
             if (*depth == LESS) {
                /* right subtree depth decreased */
-               switch (node->bal) {
-               CASE RIGHT:
-                  root->bal = BAL;
-               CASE BAL:
-                  root->bal = LEFT;
+               if (IS_DEEPER(root->left)) {
+                  *depth = rebalance_l(&root, LEFTUNBAL);
+               } else if (IS_DEEPER(root->right)) {
+                  root->rightval &= ~DEEPER;
+               } else {
+                  root->leftval  |=  DEEPER;
                   *depth = SAME;
-               CASE LEFT:
-                  *depth = rebalance(&root, LEFTUNBAL);
                }
             } else {
-               root->bal = node->bal;
                *depth = SAME;
             }
-            *rootaddr = root;
+            *p_root = PTRADD(root, root_deeper);
          }
       }
+      return node;
+   } else {
+      int cmp = TAILCMP(keytail, root->data, keyoffs, ind);
+      if (cmp < 0) {
+         goto remove_lt;
+      } else if (cmp > 0) {
+         goto remove_gt;
+      } else {
+         goto remove_eq;
+      }
    }
-   return node;
 }
 
 /*---------------------------------------------------------------------------*/
 
-static void *avl_f_remove(TREE *tree, long keyval)
+void *avl_remove(TREE *tree, void *key)
 {
-   NODE *node;
-   void *data;
-   DEPTH depth;
+   X_NODE *x_node = NULL;
+   L_NODE *l_node = NULL;
+   long    l_key;
+   char   *keytail;
+   void   *data;
+   DEPTH   depth;
 
+   if (tree->path) {
+      AVL_FREE_AND_NULL(tree->path);
+   }
    if (tree->root) {
-      switch (LOCTYPE(tree->keyinfo)) {
-      CASE USR_NODUP: node = remove_ptr(&tree->root, (void *)keyval, tree->usrcmp, NODUP, &depth);
-      CASE STR_NODUP: node = remove_ptr(&tree->root, (void *)keyval, NULL,         NODUP, &depth);
-      CASE COR_NODUP: keyval = CORRECT(keyval);
-      case VAL_NODUP: node = remove_val(&tree->root,         keyval,               NODUP, &depth);
-      CASE USR_DUP:   node = remove_ptr(&tree->root, (void *)keyval, tree->usrcmp, DUP,   &depth);
-      CASE STR_DUP:   node = remove_ptr(&tree->root, (void *)keyval, NULL,         DUP,   &depth);
-      CASE COR_DUP:   keyval = CORRECT(keyval);
-      case VAL_DUP:   node = remove_val(&tree->root,         keyval,               DUP,   &depth);
-      DEFAULT:        node = NULL; assert( !"unexpected LOCTYPE");
+      if (IS_X(tree)) {
+         x_node = remove_x(&tree->x_root, key, tree->keyoffs, IS_IND(tree), tree->usrcmp, IS_DUP(tree), &depth);
+         if ( !x_node) return NULL;
+         data = x_node->data;
+         PTRPUSH(tree->unused, x_node);
+      } else {
+         l_key = l_key_of(key, &keytail);
+         l_node = remove_l(&tree->l_root, l_key, keytail, tree->keyoffs, IS_IND(tree), IS_DUP(tree), &depth);
+         if ( !l_node) return NULL;
+         data = l_node->data;
+         PTRPUSH(tree->unused, l_node);
       }
-      if (node) {
-         tree->nodes--;
-         if (tree->path) {
-            FREE_PATH(tree->path);
-            tree->path = NULL;
-         }
-         data = node->data;
-         FREE_NODE(node);
-         return data;
-      }
+      tree->nodes--;
+      return data;
    }
    return NULL;
 }
 
-void *avl_remove       (TREE *tree, void          *key) { return avl_f_remove(tree, (long)key); }
-void *avl_remove_mbr   (TREE *tree, void          *key) { return avl_f_remove(tree, (long)key); }
-void *avl_remove_chars (TREE *tree, char          *key) { return avl_f_remove(tree, (long)key); }
-void *avl_remove_ptr   (TREE *tree, void          *key) { return avl_f_remove(tree, (long)key); }
-void *avl_remove_str   (TREE *tree, char          *key) { return avl_f_remove(tree, (long)key); }
-void *avl_remove_long  (TREE *tree, long           key) { return avl_f_remove(tree, (long)key); }
-void *avl_remove_int   (TREE *tree, int            key) { return avl_f_remove(tree, (long)key); }
-void *avl_remove_short (TREE *tree, short          key) { return avl_f_remove(tree, (long)key); }
-void *avl_remove_schar (TREE *tree, signed char    key) { return avl_f_remove(tree, (long)key); }
-void *avl_remove_ulong (TREE *tree, unsigned long  key) { return avl_f_remove(tree, (long)key); }
-void *avl_remove_uint  (TREE *tree, unsigned int   key) { return avl_f_remove(tree, (long)key); }
-void *avl_remove_ushort(TREE *tree, unsigned short key) { return avl_f_remove(tree, (long)key); }
-void *avl_remove_uchar (TREE *tree, unsigned char  key) { return avl_f_remove(tree, (long)key); }
+void *avl_remove_mbr  (TREE *tree, void *key) { return avl_remove(tree, key); }
+void *avl_remove_chars(TREE *tree, char *key) { return avl_remove(tree, key); }
+void *avl_remove_ptr  (TREE *tree, void *key) { return avl_remove(tree, key); }
+void *avl_remove_str  (TREE *tree, char *key) { return avl_remove(tree, key); }
+
+/*---------------------------------------------------------------------------*/
+
+void *avl_remove_long(TREE *tree, long key)
+{
+   L_NODE *l_node;
+   void   *data;
+   DEPTH   depth;
+
+   if (tree->path) {
+      AVL_FREE_AND_NULL(tree->path);
+   }
+   if (tree->root) {
+      if (IS_X(tree)) {
+         return NULL;
+      }
+      if (IS_CORR(tree)) {
+         key = CORRECT(key);
+      }
+      l_node = remove_l(&tree->l_root, key, NULL, tree->keyoffs, IS_IND(tree), IS_DUP(tree), &depth);
+      if ( !l_node) return NULL;
+      data = l_node->data;
+      PTRPUSH(tree->unused, l_node);
+      tree->nodes--;
+      return data;
+   }
+   return NULL;
+}
+
+void *avl_remove_int   (TREE *tree, int    key) { return avl_remove_long(tree, key); }
+void *avl_remove_short (TREE *tree, short  key) { return avl_remove_long(tree, key); }
+void *avl_remove_schar (TREE *tree, SCHAR  key) { return avl_remove_long(tree, key); }
+void *avl_remove_ulong (TREE *tree, ULONG  key) { return avl_remove_long(tree, key); }
+void *avl_remove_uint  (TREE *tree, UINT   key) { return avl_remove_long(tree, key); }
+void *avl_remove_ushort(TREE *tree, USHORT key) { return avl_remove_long(tree, key); }
+void *avl_remove_uchar (TREE *tree, UCHAR  key) { return avl_remove_long(tree, key); }
+
+/*---------------------------------------------------------------------------*/
+
+void *avl_remove_float(TREE *tree, float key)
+{
+   if (IS_X(tree)) return avl_remove     (tree, &key);
+   else            return avl_remove_long(tree, flt2lng(key));
+}
+
+void *avl_remove_double(TREE *tree, double key)
+{
+   if (IS_X(tree)) return avl_remove     (tree, &key);
+   else            return avl_remove_long(tree, dbl2lng(key));
+}
 
 /*===========================================================================*/
 
-#define SELECT_EQ_NODUP(node, val, this) { \
-   if      ((this) < (val)         )                    (node) = (node)->right;   \
-   else if (         (val) < (this))                    (node) = (node)->left;    \
-   else return                                                   (node)->data;    \
-}
-#define SELECT_EQ_DUP(node, val, this, save) { \
-   if      ((this) < (val)         )                    (node) = (node)->right;   \
-   else if (         (val) < (this))                    (node) = (node)->left;    \
-   else                              { (save) = (node); (node) = (node)->left;  } \
-}
-#define SELECT_GE_NODUP(node, val, this, save) { \
-   if      (         (val) < (this)) { (save) = (node); (node) = (node)->left;  } \
-   else if ((this) < (val)         )                    (node) = (node)->right;   \
-   else return (node)->data;    \
-}
-#define SELECT_GE_DUP(node, val, this, save) { \
-   if      ((this) < (val)         )                    (node) = (node)->right;   \
-   else                              { (save) = (node); (node) = (node)->left;  } \
-}
-#define SELECT_GT(node, val, this, save) { \
-   if      (         (val) < (this)) { (save) = (node); (node) = (node)->left;  } \
-   else                                                 (node) = (node)->right;   \
-}
-#define SELECT_LE_NODUP(node, val, this, save) { \
-   if      ((this) < (val)         ) { (save) = (node); (node) = (node)->right; } \
-   else if (         (val) < (this))                    (node) = (node)->left;    \
-   else return (node)->data;    \
-}
-#define SELECT_LE_DUP(node, val, this, save) { \
-   if      (         (val) < (this))                    (node) = (node)->left;    \
-   else                              { (save) = (node); (node) = (node)->right; } \
-}
-#define SELECT_LT(node, val, this, save) { \
-   if      ((this) < (val)         ) { (save) = (node); (node) = (node)->right; } \
-   else                                                 (node) = (node)->left;    \
-}
+#define CONTINUE_LEFT( node)       ((node) = PTR_OF((node)->left))
+#define CONTINUE_RIGHT(node)       ((node) = PTR_OF((node)->right))
+#define SAVE_AND_LEFT( node, save) ((save) = (node), CONTINUE_LEFT( node))
+#define SAVE_AND_RIGHT(node, save) ((save) = (node), CONTINUE_RIGHT(node))
 
 /*---------------------------------------------------------------------------*/
 
-static void *avl_f_locate(TREE *tree, long keyval)
+void *avl_locate(TREE *tree, void *key)
 {
-   NODE  *node;
-   NODE  *save;
-   CMPFUN usrcmp;
-   int    cmp;
+   X_NODE *x_node, *x_save;
+   L_NODE *l_node, *l_save;
+   int     cmp;
+   long    l_key;
+   char   *keytail;
 
-   node = tree->root;
-   switch (LOCTYPE(tree->keyinfo)) {
-   CASE USR_NODUP:
-      usrcmp = tree->usrcmp;
-      while (node) {
-         cmp = (*usrcmp)((void *)keyval, node->key.ptr);
-         SELECT_EQ_NODUP(node, cmp, 0)
+   switch (tree->bits) {
+   CASE X_USR_NODUP:
+      for (x_node = tree->x_root; x_node; ) {
+         cmp = CMP(tree->usrcmp, key, x_node->data, 0, false);
+         if      (cmp < 0) CONTINUE_LEFT (x_node);
+         else if (cmp > 0) CONTINUE_RIGHT(x_node);
+         else              return x_node->data;
       }
-   CASE STR_NODUP:
-      while (node) {
-         cmp = strcmp((char *)keyval, (char *)node->key.ptr);
-         SELECT_EQ_NODUP(node, cmp, 0)
+   CASE X_MBR_NODUP:
+      for (x_node = tree->x_root; x_node; ) {
+         cmp = CMP(tree->usrcmp, key, x_node->data, tree->keyoffs, false);
+         if      (cmp < 0) CONTINUE_LEFT (x_node);
+         else if (cmp > 0) CONTINUE_RIGHT(x_node);
+         else              return x_node->data;
       }
-   CASE COR_NODUP:
-      keyval = CORRECT(keyval);
-   case VAL_NODUP:
-      while (node) {
-         SELECT_EQ_NODUP(node, keyval, node->key.val)
+   CASE X_PTR_NODUP:
+      for (x_node = tree->x_root; x_node; ) {
+         cmp = CMP(tree->usrcmp, key, x_node->data, tree->keyoffs, true);
+         if      (cmp < 0) CONTINUE_LEFT (x_node);
+         else if (cmp > 0) CONTINUE_RIGHT(x_node);
+         else              return x_node->data;
       }
-   CASE USR_DUP:
-      save = NULL;
-      usrcmp = tree->usrcmp;
-      while (node) {
-         cmp = (*usrcmp)((void *)keyval, node->key.ptr);
-         SELECT_EQ_DUP(node, cmp, 0, save)
+   CASE L_CHA_NODUP:
+      l_key = l_key_of(key, &keytail);
+      for (l_node = tree->l_root; l_node; ) {
+         if      (l_key < l_node->key) CONTINUE_LEFT (l_node);
+         else if (l_key > l_node->key) CONTINUE_RIGHT(l_node);
+         else if (keytail) {
+            cmp = TAILCMP(keytail, l_node->data, tree->keyoffs, false);
+            if      (cmp < 0) CONTINUE_LEFT (l_node);
+            else if (cmp > 0) CONTINUE_RIGHT(l_node);
+            else              return l_node->data;
+         } else               return l_node->data;
       }
-      if (save) {
-         return save->data;
+   CASE L_STR_NODUP:
+      l_key = l_key_of(key, &keytail);
+      for (l_node = tree->l_root; l_node; ) {
+         if      (l_key < l_node->key) CONTINUE_LEFT (l_node);
+         else if (l_key > l_node->key) CONTINUE_RIGHT(l_node);
+         else if (keytail) {
+            cmp = TAILCMP(keytail, l_node->data, tree->keyoffs, true);
+            if      (cmp < 0) CONTINUE_LEFT (l_node);
+            else if (cmp > 0) CONTINUE_RIGHT(l_node);
+            else              return l_node->data;
+         } else               return l_node->data;
       }
-   CASE STR_DUP:
-      save = NULL;
-      while (node) {
-         cmp = strcmp((char *)keyval, (char *)node->key.ptr);
-         SELECT_EQ_DUP(node, cmp, 0, save)
+   CASE X_USR_DUP:
+      for (x_node = tree->x_root, x_save = NULL; x_node; ) {
+         cmp = CMP(tree->usrcmp, key, x_node->data, 0, false);
+         if      (cmp < 0) CONTINUE_LEFT (x_node);
+         else if (cmp > 0) CONTINUE_RIGHT(x_node);
+         else              SAVE_AND_LEFT (x_node, x_save);
       }
-      if (save) {
-         return save->data;
+      if (x_save) return x_save->data;
+   CASE X_MBR_DUP:
+      for (x_node = tree->x_root, x_save = NULL; x_node; ) {
+         cmp = CMP(tree->usrcmp, key, x_node->data, tree->keyoffs, false);
+         if      (cmp < 0) CONTINUE_LEFT (x_node);
+         else if (cmp > 0) CONTINUE_RIGHT(x_node);
+         else              SAVE_AND_LEFT (x_node, x_save);
       }
-   CASE COR_DUP:
-      keyval = CORRECT(keyval);
-   case VAL_DUP:
-      save = NULL;
-      while (node) {
-         SELECT_EQ_DUP(node, keyval, node->key.val, save)
+      if (x_save) return x_save->data;
+   CASE X_PTR_DUP:
+      for (x_node = tree->x_root, x_save = NULL; x_node; ) {
+         cmp = CMP(tree->usrcmp, key, x_node->data, tree->keyoffs, true);
+         if      (cmp < 0) CONTINUE_LEFT (x_node);
+         else if (cmp > 0) CONTINUE_RIGHT(x_node);
+         else              SAVE_AND_LEFT (x_node, x_save);
       }
-      if (save) {
-         return save->data;
+      if (x_save) return x_save->data;
+   CASE L_CHA_DUP:
+      l_key = l_key_of(key, &keytail);
+      for (l_node = tree->l_root, l_save = NULL; l_node; ) {
+         if      (l_key < l_node->key) CONTINUE_LEFT (l_node);
+         else if (l_key > l_node->key) CONTINUE_RIGHT(l_node);
+         else if (keytail) {
+            cmp = TAILCMP(keytail, l_node->data, tree->keyoffs, false);
+            if      (cmp < 0) CONTINUE_LEFT (l_node);
+            else if (cmp > 0) CONTINUE_RIGHT(l_node);
+            else              SAVE_AND_LEFT (l_node, l_save);
+         } else               SAVE_AND_LEFT (l_node, l_save);
       }
+      if (l_save) return l_save->data;
+   CASE L_STR_DUP:
+      l_key = l_key_of(key, &keytail);
+      for (l_node = tree->l_root, l_save = NULL; l_node; ) {
+         if      (l_key < l_node->key) CONTINUE_LEFT (l_node);
+         else if (l_key > l_node->key) CONTINUE_RIGHT(l_node);
+         else if (keytail) {
+            cmp = TAILCMP(keytail, l_node->data, tree->keyoffs, true);
+            if      (cmp < 0) CONTINUE_LEFT (l_node);
+            else if (cmp > 0) CONTINUE_RIGHT(l_node);
+            else              SAVE_AND_LEFT (l_node, l_save);
+         } else               SAVE_AND_LEFT (l_node, l_save);
+      }
+      if (l_save) return l_save->data;
    }
    return NULL;
 }
 
-void *avl_locate       (TREE *tree, void          *key) { return avl_f_locate(tree, (long)key); }
-void *avl_locate_mbr   (TREE *tree, void          *key) { return avl_f_locate(tree, (long)key); }
-void *avl_locate_chars (TREE *tree, char          *key) { return avl_f_locate(tree, (long)key); }
-void *avl_locate_ptr   (TREE *tree, void          *key) { return avl_f_locate(tree, (long)key); }
-void *avl_locate_str   (TREE *tree, char          *key) { return avl_f_locate(tree, (long)key); }
-void *avl_locate_long  (TREE *tree, long           key) { return avl_f_locate(tree, (long)key); }
-void *avl_locate_int   (TREE *tree, int            key) { return avl_f_locate(tree, (long)key); }
-void *avl_locate_short (TREE *tree, short          key) { return avl_f_locate(tree, (long)key); }
-void *avl_locate_schar (TREE *tree, signed char    key) { return avl_f_locate(tree, (long)key); }
-void *avl_locate_ulong (TREE *tree, unsigned long  key) { return avl_f_locate(tree, (long)key); }
-void *avl_locate_uint  (TREE *tree, unsigned int   key) { return avl_f_locate(tree, (long)key); }
-void *avl_locate_ushort(TREE *tree, unsigned short key) { return avl_f_locate(tree, (long)key); }
-void *avl_locate_uchar (TREE *tree, unsigned char  key) { return avl_f_locate(tree, (long)key); }
+void *avl_locate_mbr  (TREE *tree, void *key) { return avl_locate(tree, key); }
+void *avl_locate_ptr  (TREE *tree, void *key) { return avl_locate(tree, key); }
+void *avl_locate_chars(TREE *tree, char *key) { return avl_locate(tree, key); }
+void *avl_locate_str  (TREE *tree, char *key) { return avl_locate(tree, key); }
 
 /*---------------------------------------------------------------------------*/
 
-static void *avl_f_locate_ge(TREE *tree, long keyval)
+void *avl_locate_long(TREE *tree, long key)
 {
-   NODE  *node;
-   NODE  *save;
-   CMPFUN usrcmp;
-   int    cmp;
+   L_NODE *l_node, *l_save;
 
-   node = tree->root;
-   save = NULL;
-   switch (LOCTYPE(tree->keyinfo)) {
-   CASE USR_NODUP:
-      usrcmp = tree->usrcmp;
-      while (node) {
-         cmp = (*usrcmp)((void *)keyval, node->key.ptr);
-         SELECT_GE_NODUP(node, cmp, 0, save)
+   switch (tree->bits) {
+   CASE L_COR_NODUP:
+      key = CORRECT(key);
+   case L_VAL_NODUP:
+      for (l_node = tree->l_root; l_node; ) {
+         if      (key < l_node->key) CONTINUE_LEFT (l_node);
+         else if (key > l_node->key) CONTINUE_RIGHT(l_node);
+         else return l_node->data;
       }
-   CASE STR_NODUP:
-      while (node) {
-         cmp = strcmp((char *)keyval, (char *)node->key.ptr);
-         SELECT_GE_NODUP(node, cmp, 0, save)
+   CASE L_COR_DUP:
+      key = CORRECT(key);
+   case L_VAL_DUP:
+      for (l_node = tree->l_root, l_save = NULL; l_node; ) {
+         if      (key < l_node->key) CONTINUE_LEFT (l_node);
+         else if (key > l_node->key) CONTINUE_RIGHT(l_node);
+         else                        SAVE_AND_LEFT (l_node, l_save);
       }
-   CASE COR_NODUP:
-      keyval = CORRECT(keyval);
-   case VAL_NODUP:
-      while (node) {
-         SELECT_GE_NODUP(node, keyval, node->key.val, save)
-      }
-   CASE USR_DUP:
-      usrcmp = tree->usrcmp;
-      while (node) {
-         cmp = (*usrcmp)((void *)keyval, node->key.ptr);
-         SELECT_GE_DUP(node, cmp, 0, save)
-      }
-   CASE STR_DUP:
-      while (node) {
-         cmp = strcmp((char *)keyval, (char *)node->key.ptr);
-         SELECT_GE_DUP(node, cmp, 0, save)
-      }
-   CASE COR_DUP:
-      keyval = CORRECT(keyval);
-   case VAL_DUP:
-      while (node) {
-         SELECT_GE_DUP(node, keyval, node->key.val, save)
-      }
+      if (l_save) return l_save->data;
    }
-   return save ? save->data : NULL;
+   return NULL;
 }
 
-void *avl_locate_ge       (TREE *tree, void          *key) { return avl_f_locate_ge(tree, (long)key); }
-void *avl_locate_ge_mbr   (TREE *tree, void          *key) { return avl_f_locate_ge(tree, (long)key); }
-void *avl_locate_ge_chars (TREE *tree, char          *key) { return avl_f_locate_ge(tree, (long)key); }
-void *avl_locate_ge_ptr   (TREE *tree, void          *key) { return avl_f_locate_ge(tree, (long)key); }
-void *avl_locate_ge_str   (TREE *tree, char          *key) { return avl_f_locate_ge(tree, (long)key); }
-void *avl_locate_ge_long  (TREE *tree, long           key) { return avl_f_locate_ge(tree, (long)key); }
-void *avl_locate_ge_int   (TREE *tree, int            key) { return avl_f_locate_ge(tree, (long)key); }
-void *avl_locate_ge_short (TREE *tree, short          key) { return avl_f_locate_ge(tree, (long)key); }
-void *avl_locate_ge_schar (TREE *tree, signed char    key) { return avl_f_locate_ge(tree, (long)key); }
-void *avl_locate_ge_ulong (TREE *tree, unsigned long  key) { return avl_f_locate_ge(tree, (long)key); }
-void *avl_locate_ge_uint  (TREE *tree, unsigned int   key) { return avl_f_locate_ge(tree, (long)key); }
-void *avl_locate_ge_ushort(TREE *tree, unsigned short key) { return avl_f_locate_ge(tree, (long)key); }
-void *avl_locate_ge_uchar (TREE *tree, unsigned char  key) { return avl_f_locate_ge(tree, (long)key); }
+void *avl_locate_int   (TREE *tree, int    key) { return avl_locate_long(tree, key); }
+void *avl_locate_short (TREE *tree, short  key) { return avl_locate_long(tree, key); }
+void *avl_locate_schar (TREE *tree, SCHAR  key) { return avl_locate_long(tree, key); }
+void *avl_locate_ulong (TREE *tree, ULONG  key) { return avl_locate_long(tree, key); }
+void *avl_locate_uint  (TREE *tree, UINT   key) { return avl_locate_long(tree, key); }
+void *avl_locate_ushort(TREE *tree, USHORT key) { return avl_locate_long(tree, key); }
+void *avl_locate_uchar (TREE *tree, UCHAR  key) { return avl_locate_long(tree, key); }
 
 /*---------------------------------------------------------------------------*/
 
-static void *avl_f_locate_gt(TREE *tree, long keyval)
+void *avl_locate_float(TREE *tree, float key)
 {
-   NODE  *node;
-   NODE  *save;
-   CMPFUN usrcmp;
-   int    cmp;
-
-   node = tree->root;
-   save = NULL;
-   switch (CMPTYPE(tree->keyinfo)) {
-   CASE USR_CMP:
-      usrcmp = tree->usrcmp;
-      while (node) {
-         cmp = (*usrcmp)((void *)keyval, node->key.ptr);
-         SELECT_GT(node, cmp, 0, save)
-      }
-   CASE STR_CMP:
-      while (node) {
-         cmp = strcmp((char *)keyval, (char *)node->key.ptr);
-         SELECT_GT(node, cmp, 0, save)
-      }
-   CASE COR_CMP:
-      keyval = CORRECT(keyval);
-   case VAL_CMP:
-      while (node) {
-         SELECT_GT(node, keyval, node->key.val, save)
-      }
-   }
-   return save ? save->data : NULL;
+   if (IS_X(tree)) return avl_locate     (tree, &key);
+   else            return avl_locate_long(tree, flt2lng(key));
 }
 
-void *avl_locate_gt       (TREE *tree, void          *key) { return avl_f_locate_gt(tree, (long)key); }
-void *avl_locate_gt_mbr   (TREE *tree, void          *key) { return avl_f_locate_gt(tree, (long)key); }
-void *avl_locate_gt_chars (TREE *tree, char          *key) { return avl_f_locate_gt(tree, (long)key); }
-void *avl_locate_gt_ptr   (TREE *tree, void          *key) { return avl_f_locate_gt(tree, (long)key); }
-void *avl_locate_gt_str   (TREE *tree, char          *key) { return avl_f_locate_gt(tree, (long)key); }
-void *avl_locate_gt_long  (TREE *tree, long           key) { return avl_f_locate_gt(tree, (long)key); }
-void *avl_locate_gt_int   (TREE *tree, int            key) { return avl_f_locate_gt(tree, (long)key); }
-void *avl_locate_gt_short (TREE *tree, short          key) { return avl_f_locate_gt(tree, (long)key); }
-void *avl_locate_gt_schar (TREE *tree, signed char    key) { return avl_f_locate_gt(tree, (long)key); }
-void *avl_locate_gt_ulong (TREE *tree, unsigned long  key) { return avl_f_locate_gt(tree, (long)key); }
-void *avl_locate_gt_uint  (TREE *tree, unsigned int   key) { return avl_f_locate_gt(tree, (long)key); }
-void *avl_locate_gt_ushort(TREE *tree, unsigned short key) { return avl_f_locate_gt(tree, (long)key); }
-void *avl_locate_gt_uchar (TREE *tree, unsigned char  key) { return avl_f_locate_gt(tree, (long)key); }
+void *avl_locate_double(TREE *tree, double key)
+{
+   if (IS_X(tree)) return avl_locate     (tree, &key);
+   else            return avl_locate_long(tree, dbl2lng(key));
+}
 
 /*---------------------------------------------------------------------------*/
 
-static void *avl_f_locate_le(TREE *tree, long keyval)
+void *avl_locate_ge(TREE *tree, void *key)
 {
-   NODE  *node;
-   NODE  *save;
-   CMPFUN usrcmp;
-   int    cmp;
+   X_NODE *x_node, *x_save;
+   L_NODE *l_node, *l_save;
+   int     cmp;
+   long    l_key;
+   char   *keytail;
 
-   node = tree->root;
-   save = NULL;
-   switch (LOCTYPE(tree->keyinfo)) {
-   CASE USR_NODUP:
-      usrcmp = tree->usrcmp;
-      while (node) {
-         cmp = (*usrcmp)((void *)keyval, node->key.ptr);
-         SELECT_LE_NODUP(node, cmp, 0, save)
+   switch (tree->bits) {
+   CASE X_USR_NODUP:
+      for (x_node = tree->x_root, x_save = NULL; x_node; ) {
+         cmp = CMP(tree->usrcmp, key, x_node->data, 0, false);
+         if      (cmp < 0) SAVE_AND_LEFT (x_node, x_save);
+         else if (cmp > 0) CONTINUE_RIGHT(x_node);
+         else              return x_node->data;
       }
-   CASE STR_NODUP:
-      while (node) {
-         cmp = strcmp((char *)keyval, (char *)node->key.ptr);
-         SELECT_LE_NODUP(node, cmp, 0, save)
+      if (x_save) return x_save->data;
+   CASE X_MBR_NODUP:
+      for (x_node = tree->x_root, x_save = NULL; x_node; ) {
+         cmp = CMP(tree->usrcmp, key, x_node->data, tree->keyoffs, false);
+         if      (cmp < 0) SAVE_AND_LEFT (x_node, x_save);
+         else if (cmp > 0) CONTINUE_RIGHT(x_node);
+         else              return x_node->data;
       }
-   CASE COR_NODUP:
-      keyval = CORRECT(keyval);
-   case VAL_NODUP:
-      while (node) {
-         SELECT_LE_NODUP(node, keyval, node->key.val, save)
+      if (x_save) return x_save->data;
+   CASE X_PTR_NODUP:
+      for (x_node = tree->x_root, x_save = NULL; x_node; ) {
+         cmp = CMP(tree->usrcmp, key, x_node->data, tree->keyoffs, true);
+         if      (cmp < 0) SAVE_AND_LEFT (x_node, x_save);
+         else if (cmp > 0) CONTINUE_RIGHT(x_node);
+         else              return x_node->data;
       }
-   CASE USR_DUP:
-      usrcmp = tree->usrcmp;
-      while (node) {
-         cmp = (*usrcmp)((void *)keyval, node->key.ptr);
-         SELECT_LE_DUP(node, cmp, 0, save)
+      if (x_save) return x_save->data;
+   CASE L_CHA_NODUP:
+      l_key = l_key_of(key, &keytail);
+      for (l_node = tree->l_root, l_save = NULL; l_node; ) {
+         if      (l_key < l_node->key) SAVE_AND_LEFT (l_node, l_save);
+         else if (l_key > l_node->key) CONTINUE_RIGHT(l_node);
+         else if (keytail) {
+            cmp = TAILCMP(keytail, l_node->data, tree->keyoffs, false);
+            if      (cmp < 0) SAVE_AND_LEFT (l_node, l_save);
+            else if (cmp > 0) CONTINUE_RIGHT(l_node);
+            else              return l_node->data;
+         } else               return l_node->data;
       }
-   CASE STR_DUP:
-      while (node) {
-         cmp = strcmp((char *)keyval, (char *)node->key.ptr);
-         SELECT_LE_DUP(node, cmp, 0, save)
+      if (l_save) return l_save->data;
+   CASE L_STR_NODUP:
+      l_key = l_key_of(key, &keytail);
+      for (l_node = tree->l_root, l_save = NULL; l_node; ) {
+         if      (l_key < l_node->key) SAVE_AND_LEFT (l_node, l_save);
+         else if (l_key > l_node->key) CONTINUE_RIGHT(l_node);
+         else if (keytail) {
+            cmp = TAILCMP(keytail, l_node->data, tree->keyoffs, true);
+            if      (cmp < 0) SAVE_AND_LEFT (l_node, l_save);
+            else if (cmp > 0) CONTINUE_RIGHT(l_node);
+            else              return l_node->data;
+         } else               return l_node->data;
       }
-   CASE COR_DUP:
-      keyval = CORRECT(keyval);
-   case VAL_DUP:
-      while (node) {
-         SELECT_LE_DUP(node, keyval, node->key.val, save)
+      if (l_save) return l_save->data;
+   CASE X_USR_DUP:
+      for (x_node = tree->x_root, x_save = NULL; x_node; ) {
+         cmp = CMP(tree->usrcmp, key, x_node->data, 0, false);
+         if (cmp > 0) CONTINUE_RIGHT(x_node);
+         else         SAVE_AND_LEFT (x_node, x_save);
       }
+      if (x_save) return x_save->data;
+   CASE X_MBR_DUP:
+      for (x_node = tree->x_root, x_save = NULL; x_node; ) {
+         cmp = CMP(tree->usrcmp, key, x_node->data, tree->keyoffs, false);
+         if (cmp > 0) CONTINUE_RIGHT(x_node);
+         else         SAVE_AND_LEFT (x_node, x_save);
+      }
+      if (x_save) return x_save->data;
+   CASE X_PTR_DUP:
+      for (x_node = tree->x_root, x_save = NULL; x_node; ) {
+         cmp = CMP(tree->usrcmp, key, x_node->data, tree->keyoffs, true);
+         if (cmp > 0) CONTINUE_RIGHT(x_node);
+         else         SAVE_AND_LEFT (x_node, x_save);
+      }
+      if (x_save) return x_save->data;
+   CASE L_CHA_DUP:
+      l_key = l_key_of(key, &keytail);
+      for (l_node = tree->l_root, l_save = NULL; l_node; ) {
+         if      (l_key > l_node->key) CONTINUE_RIGHT(l_node);
+         else if (l_key < l_node->key) SAVE_AND_LEFT (l_node, l_save);
+         else if (keytail) {
+            cmp = TAILCMP(keytail, l_node->data, tree->keyoffs, false);
+            if (cmp > 0) CONTINUE_RIGHT(l_node);
+            else         SAVE_AND_LEFT (l_node, l_save);
+         } else          SAVE_AND_LEFT (l_node, l_save);
+      }
+      if (l_save) return l_save->data;
+   CASE L_STR_DUP:
+      l_key = l_key_of(key, &keytail);
+      for (l_node = tree->l_root, l_save = NULL; l_node; ) {
+         if      (l_key > l_node->key) CONTINUE_RIGHT(l_node);
+         else if (l_key < l_node->key) SAVE_AND_LEFT (l_node, l_save);
+         else if (keytail) {
+            cmp = TAILCMP(keytail, l_node->data, tree->keyoffs, true);
+            if (cmp > 0) CONTINUE_RIGHT(l_node);
+            else         SAVE_AND_LEFT (l_node, l_save);
+         } else          SAVE_AND_LEFT (l_node, l_save);
+      }
+      if (l_save) return l_save->data;
    }
-   return save ? save->data : NULL;
+   return NULL;
 }
 
-void *avl_locate_le       (TREE *tree, void          *key) { return avl_f_locate_le(tree, (long)key); }
-void *avl_locate_le_mbr   (TREE *tree, void          *key) { return avl_f_locate_le(tree, (long)key); }
-void *avl_locate_le_chars (TREE *tree, char          *key) { return avl_f_locate_le(tree, (long)key); }
-void *avl_locate_le_ptr   (TREE *tree, void          *key) { return avl_f_locate_le(tree, (long)key); }
-void *avl_locate_le_str   (TREE *tree, char          *key) { return avl_f_locate_le(tree, (long)key); }
-void *avl_locate_le_long  (TREE *tree, long           key) { return avl_f_locate_le(tree, (long)key); }
-void *avl_locate_le_int   (TREE *tree, int            key) { return avl_f_locate_le(tree, (long)key); }
-void *avl_locate_le_short (TREE *tree, short          key) { return avl_f_locate_le(tree, (long)key); }
-void *avl_locate_le_schar (TREE *tree, signed char    key) { return avl_f_locate_le(tree, (long)key); }
-void *avl_locate_le_ulong (TREE *tree, unsigned long  key) { return avl_f_locate_le(tree, (long)key); }
-void *avl_locate_le_uint  (TREE *tree, unsigned int   key) { return avl_f_locate_le(tree, (long)key); }
-void *avl_locate_le_ushort(TREE *tree, unsigned short key) { return avl_f_locate_le(tree, (long)key); }
-void *avl_locate_le_uchar (TREE *tree, unsigned char  key) { return avl_f_locate_le(tree, (long)key); }
+void *avl_locate_ge_mbr  (TREE *tree, void *key) { return avl_locate_ge(tree, key); }
+void *avl_locate_ge_ptr  (TREE *tree, void *key) { return avl_locate_ge(tree, key); }
+void *avl_locate_ge_chars(TREE *tree, char *key) { return avl_locate_ge(tree, key); }
+void *avl_locate_ge_str  (TREE *tree, char *key) { return avl_locate_ge(tree, key); }
 
 /*---------------------------------------------------------------------------*/
 
-static void *avl_f_locate_lt(TREE *tree, long keyval)
+void *avl_locate_ge_long(TREE *tree, long key)
 {
-   NODE  *node;
-   NODE  *save;
-   CMPFUN usrcmp;
-   int    cmp;
+   L_NODE *l_node, *l_save;
 
-   node = tree->root;
-   save = NULL;
-   switch (CMPTYPE(tree->keyinfo)) {
-   CASE USR_CMP:
-      usrcmp = tree->usrcmp;
-      while (node) {
-         cmp = (*usrcmp)((void *)keyval, node->key.ptr);
-         SELECT_LT(node, cmp, 0, save)
+   switch (tree->bits) {
+   CASE L_COR_NODUP:
+      key = CORRECT(key);
+   case L_VAL_NODUP:
+      for (l_node = tree->l_root, l_save = NULL; l_node; ) {
+         if      (key < l_node->key) SAVE_AND_LEFT (l_node, l_save);
+         else if (key > l_node->key) CONTINUE_RIGHT(l_node);
+         else                        return l_node->data;
       }
-   CASE STR_CMP:
-      while (node) {
-         cmp = strcmp((char *)keyval, (char *)node->key.ptr);
-         SELECT_LT(node, cmp, 0, save)
+      if (l_save) return l_save->data;
+   CASE L_COR_DUP:
+      key = CORRECT(key);
+   case L_VAL_DUP:
+      for (l_node = tree->l_root, l_save = NULL; l_node; ) {
+         if (key > l_node->key) CONTINUE_RIGHT(l_node);
+         else                   SAVE_AND_LEFT (l_node, l_save);
       }
-   CASE COR_CMP:
-      keyval = CORRECT(keyval);
-   case VAL_CMP:
-      while (node) {
-         SELECT_LT(node, keyval, node->key.val, save)
-      }
+      if (l_save) return l_save->data;
    }
-   return save ? save->data : NULL;
+   return NULL;
 }
 
-void *avl_locate_lt       (TREE *tree, void          *key) { return avl_f_locate_lt(tree, (long)key); }
-void *avl_locate_lt_mbr   (TREE *tree, void          *key) { return avl_f_locate_lt(tree, (long)key); }
-void *avl_locate_lt_chars (TREE *tree, char          *key) { return avl_f_locate_lt(tree, (long)key); }
-void *avl_locate_lt_ptr   (TREE *tree, void          *key) { return avl_f_locate_lt(tree, (long)key); }
-void *avl_locate_lt_str   (TREE *tree, char          *key) { return avl_f_locate_lt(tree, (long)key); }
-void *avl_locate_lt_long  (TREE *tree, long           key) { return avl_f_locate_lt(tree, (long)key); }
-void *avl_locate_lt_int   (TREE *tree, int            key) { return avl_f_locate_lt(tree, (long)key); }
-void *avl_locate_lt_short (TREE *tree, short          key) { return avl_f_locate_lt(tree, (long)key); }
-void *avl_locate_lt_schar (TREE *tree, signed char    key) { return avl_f_locate_lt(tree, (long)key); }
-void *avl_locate_lt_ulong (TREE *tree, unsigned long  key) { return avl_f_locate_lt(tree, (long)key); }
-void *avl_locate_lt_uint  (TREE *tree, unsigned int   key) { return avl_f_locate_lt(tree, (long)key); }
-void *avl_locate_lt_ushort(TREE *tree, unsigned short key) { return avl_f_locate_lt(tree, (long)key); }
-void *avl_locate_lt_uchar (TREE *tree, unsigned char  key) { return avl_f_locate_lt(tree, (long)key); }
+void *avl_locate_ge_int   (TREE *tree, int    key) { return avl_locate_ge_long(tree, key); }
+void *avl_locate_ge_short (TREE *tree, short  key) { return avl_locate_ge_long(tree, key); }
+void *avl_locate_ge_schar (TREE *tree, SCHAR  key) { return avl_locate_ge_long(tree, key); }
+void *avl_locate_ge_ulong (TREE *tree, ULONG  key) { return avl_locate_ge_long(tree, key); }
+void *avl_locate_ge_uint  (TREE *tree, UINT   key) { return avl_locate_ge_long(tree, key); }
+void *avl_locate_ge_ushort(TREE *tree, USHORT key) { return avl_locate_ge_long(tree, key); }
+void *avl_locate_ge_uchar (TREE *tree, UCHAR  key) { return avl_locate_ge_long(tree, key); }
+
+/*---------------------------------------------------------------------------*/
+
+void *avl_locate_ge_float(TREE *tree, float key)
+{
+   if (IS_X(tree)) return avl_locate_ge     (tree, &key);
+   else            return avl_locate_ge_long(tree, flt2lng(key));
+}
+
+void *avl_locate_ge_double(TREE *tree, double key)
+{
+   if (IS_X(tree)) return avl_locate_ge     (tree, &key);
+   else            return avl_locate_ge_long(tree, dbl2lng(key));
+}
+
+/*---------------------------------------------------------------------------*/
+
+void *avl_locate_gt(TREE *tree, void *key)
+{
+   X_NODE *x_node, *x_save;
+   L_NODE *l_node, *l_save;
+   int     cmp;
+   long    l_key;
+   char   *keytail;
+
+   switch (CMPTYPE(tree)) {
+   CASE X_USR_CMP:
+      for (x_node = tree->x_root, x_save = NULL; x_node; ) {
+         cmp = CMP(tree->usrcmp, key, x_node->data, 0, false);
+         if (cmp < 0) SAVE_AND_LEFT (x_node, x_save);
+         else         CONTINUE_RIGHT(x_node);
+      }
+      if (x_save) return x_save->data;
+   CASE X_MBR_CMP:
+      for (x_node = tree->x_root, x_save = NULL; x_node; ) {
+         cmp = CMP(tree->usrcmp, key, x_node->data, tree->keyoffs, false);
+         if (cmp < 0) SAVE_AND_LEFT (x_node, x_save);
+         else         CONTINUE_RIGHT(x_node);
+      }
+      if (x_save) return x_save->data;
+   CASE X_PTR_CMP:
+      for (x_node = tree->x_root, x_save = NULL; x_node; ) {
+         cmp = CMP(tree->usrcmp, key, x_node->data, tree->keyoffs, true);
+         if (cmp < 0) SAVE_AND_LEFT (x_node, x_save);
+         else         CONTINUE_RIGHT(x_node);
+      }
+      if (x_save) return x_save->data;
+   CASE L_CHA_CMP:
+      l_key = l_key_of(key, &keytail);
+      for (l_node = tree->l_root, l_save = NULL; l_node; ) {
+         if      (l_key < l_node->key) SAVE_AND_LEFT (l_node, l_save);
+         else if (l_key > l_node->key) CONTINUE_RIGHT(l_node);
+         else if (keytail) {
+            cmp = TAILCMP(keytail, l_node->data, tree->keyoffs, false);
+            if (cmp < 0) SAVE_AND_LEFT (l_node, l_save);
+            else         CONTINUE_RIGHT(l_node);
+         } else          CONTINUE_RIGHT(l_node);
+      }
+      if (l_save) return l_save->data;
+   CASE L_STR_CMP:
+      l_key = l_key_of(key, &keytail);
+      for (l_node = tree->l_root, l_save = NULL; l_node; ) {
+         if      (l_key < l_node->key) SAVE_AND_LEFT (l_node, l_save);
+         else if (l_key > l_node->key) CONTINUE_RIGHT(l_node);
+         else if (keytail) {
+            cmp = TAILCMP(keytail, l_node->data, tree->keyoffs, true);
+            if (cmp < 0) SAVE_AND_LEFT (l_node, l_save);
+            else         CONTINUE_RIGHT(l_node);
+         } else          CONTINUE_RIGHT(l_node);
+      }
+      if (l_save) return l_save->data;
+   }
+   return NULL;
+}
+
+void *avl_locate_gt_mbr  (TREE *tree, void *key) { return avl_locate_gt(tree, key); }
+void *avl_locate_gt_ptr  (TREE *tree, void *key) { return avl_locate_gt(tree, key); }
+void *avl_locate_gt_chars(TREE *tree, char *key) { return avl_locate_gt(tree, key); }
+void *avl_locate_gt_str  (TREE *tree, char *key) { return avl_locate_gt(tree, key); }
+
+/*---------------------------------------------------------------------------*/
+
+void *avl_locate_gt_long(TREE *tree, long key)
+{
+   L_NODE *l_node, *l_save;
+
+   switch (CMPTYPE(tree)) {
+   CASE L_COR_CMP:
+      key = CORRECT(key);
+   case L_VAL_CMP:
+      for (l_node = tree->l_root, l_save = NULL; l_node; ) {
+         if (key < l_node->key) SAVE_AND_LEFT (l_node, l_save);
+         else                   CONTINUE_RIGHT(l_node);
+      }
+      if (l_save) return l_save->data;
+   }
+   return NULL;
+}
+
+void *avl_locate_gt_int   (TREE *tree, int    key) { return avl_locate_gt_long(tree, key); }
+void *avl_locate_gt_short (TREE *tree, short  key) { return avl_locate_gt_long(tree, key); }
+void *avl_locate_gt_schar (TREE *tree, SCHAR  key) { return avl_locate_gt_long(tree, key); }
+void *avl_locate_gt_ulong (TREE *tree, ULONG  key) { return avl_locate_gt_long(tree, key); }
+void *avl_locate_gt_uint  (TREE *tree, UINT   key) { return avl_locate_gt_long(tree, key); }
+void *avl_locate_gt_ushort(TREE *tree, USHORT key) { return avl_locate_gt_long(tree, key); }
+void *avl_locate_gt_uchar (TREE *tree, UCHAR  key) { return avl_locate_gt_long(tree, key); }
+
+/*---------------------------------------------------------------------------*/
+
+void *avl_locate_gt_float(TREE *tree, float key)
+{
+   if (IS_X(tree)) return avl_locate_gt     (tree, &key);
+   else            return avl_locate_gt_long(tree, flt2lng(key));
+}
+
+void *avl_locate_gt_double(TREE *tree, double key)
+{
+   if (IS_X(tree)) return avl_locate_gt     (tree, &key);
+   else            return avl_locate_gt_long(tree, dbl2lng(key));
+}
+
+/*---------------------------------------------------------------------------*/
+
+void *avl_locate_le(TREE *tree, void *key)
+{
+   X_NODE *x_node, *x_save;
+   L_NODE *l_node, *l_save;
+   int     cmp;
+   long    l_key;
+   char   *keytail;
+
+   switch (tree->bits) {
+   CASE X_USR_NODUP:
+      for (x_node = tree->x_root, x_save = NULL; x_node; ) {
+         cmp = CMP(tree->usrcmp, key, x_node->data, 0, false);
+         if      (cmp > 0) SAVE_AND_RIGHT(x_node, x_save);
+         else if (cmp < 0) CONTINUE_LEFT (x_node);
+         else              return x_node->data;
+      }
+      if (x_save) return x_save->data;
+   CASE X_MBR_NODUP:
+      for (x_node = tree->x_root, x_save = NULL; x_node; ) {
+         cmp = CMP(tree->usrcmp, key, x_node->data, tree->keyoffs, false);
+         if      (cmp > 0) SAVE_AND_RIGHT(x_node, x_save);
+         else if (cmp < 0) CONTINUE_LEFT (x_node);
+         else              return x_node->data;
+      }
+      if (x_save) return x_save->data;
+   CASE X_PTR_NODUP:
+      for (x_node = tree->x_root, x_save = NULL; x_node; ) {
+         cmp = CMP(tree->usrcmp, key, x_node->data, tree->keyoffs, true);
+         if      (cmp > 0) SAVE_AND_RIGHT(x_node, x_save);
+         else if (cmp < 0) CONTINUE_LEFT (x_node);
+         else              return x_node->data;
+      }
+      if (x_save) return x_save->data;
+   CASE L_CHA_NODUP:
+      l_key = l_key_of(key, &keytail);
+      for (l_node = tree->l_root, l_save = NULL; l_node; ) {
+         if      (l_key > l_node->key) SAVE_AND_RIGHT(l_node, l_save);
+         else if (l_key < l_node->key) CONTINUE_LEFT (l_node);
+         else if (keytail) {
+            cmp = TAILCMP(keytail, l_node->data, tree->keyoffs, false);
+            if      (cmp > 0) SAVE_AND_RIGHT(l_node, l_save);
+            else if (cmp < 0) CONTINUE_LEFT (l_node);
+            else              return l_node->data;
+         } else               return l_node->data;
+      }
+      if (l_save) return l_save->data;
+   CASE L_STR_NODUP:
+      l_key = l_key_of(key, &keytail);
+      for (l_node = tree->l_root, l_save = NULL; l_node; ) {
+         if      (l_key > l_node->key) SAVE_AND_RIGHT(l_node, l_save);
+         else if (l_key < l_node->key) CONTINUE_LEFT (l_node);
+         else if (keytail) {
+            cmp = TAILCMP(keytail, l_node->data, tree->keyoffs, true);
+            if      (cmp > 0) SAVE_AND_RIGHT(l_node, l_save);
+            else if (cmp < 0) CONTINUE_LEFT (l_node);
+            else              return l_node->data;
+         } else               return l_node->data;
+      }
+      if (l_save) return l_save->data;
+   CASE X_USR_DUP:
+      for (x_node = tree->x_root, x_save = NULL; x_node; ) {
+         cmp = CMP(tree->usrcmp, key, x_node->data, 0, false);
+         if (cmp < 0) CONTINUE_LEFT (x_node);
+         else         SAVE_AND_RIGHT(x_node, x_save);
+      }
+      if (x_save) return x_save->data;
+   CASE X_MBR_DUP:
+      for (x_node = tree->x_root, x_save = NULL; x_node; ) {
+         cmp = CMP(tree->usrcmp, key, x_node->data, tree->keyoffs, false);
+         if (cmp < 0) CONTINUE_LEFT (x_node);
+         else         SAVE_AND_RIGHT(x_node, x_save);
+      }
+      if (x_save) return x_save->data;
+   CASE X_PTR_DUP:
+      for (x_node = tree->x_root, x_save = NULL; x_node; ) {
+         cmp = CMP(tree->usrcmp, key, x_node->data, tree->keyoffs, true);
+         if (cmp < 0) CONTINUE_LEFT (x_node);
+         else         SAVE_AND_RIGHT(x_node, x_save);
+      }
+      if (x_save) return x_save->data;
+   CASE L_CHA_DUP:
+      l_key = l_key_of(key, &keytail);
+      for (l_node = tree->l_root, l_save = NULL; l_node; ) {
+         if      (l_key < l_node->key) CONTINUE_LEFT (l_node);
+         else if (l_key > l_node->key) SAVE_AND_RIGHT(l_node, l_save);
+         else if (keytail) {
+            cmp = TAILCMP(keytail, l_node->data, tree->keyoffs, false);
+            if (cmp < 0) CONTINUE_LEFT (l_node);
+            else         SAVE_AND_RIGHT(l_node, l_save);
+         } else          SAVE_AND_RIGHT(l_node, l_save);
+      }
+      if (l_save) return l_save->data;
+   CASE L_STR_DUP:
+      l_key = l_key_of(key, &keytail);
+      for (l_node = tree->l_root, l_save = NULL; l_node; ) {
+         if      (l_key < l_node->key) CONTINUE_LEFT (l_node);
+         else if (l_key > l_node->key) SAVE_AND_RIGHT(l_node, l_save);
+         else if (keytail) {
+            cmp = TAILCMP(keytail, l_node->data, tree->keyoffs, true);
+            if (cmp < 0) CONTINUE_LEFT (l_node);
+            else         SAVE_AND_RIGHT(l_node, l_save);
+         } else          SAVE_AND_RIGHT(l_node, l_save);
+      }
+      if (l_save) return l_save->data;
+   }
+   return NULL;
+}
+
+void *avl_locate_le_mbr  (TREE *tree, void *key) { return avl_locate_le(tree, key); }
+void *avl_locate_le_ptr  (TREE *tree, void *key) { return avl_locate_le(tree, key); }
+void *avl_locate_le_chars(TREE *tree, char *key) { return avl_locate_le(tree, key); }
+void *avl_locate_le_str  (TREE *tree, char *key) { return avl_locate_le(tree, key); }
+
+/*---------------------------------------------------------------------------*/
+
+void *avl_locate_le_long(TREE *tree, long key)
+{
+   L_NODE *l_node, *l_save;
+
+   switch (tree->bits) {
+   CASE L_COR_NODUP:
+      key = CORRECT(key);
+   case L_VAL_NODUP:
+      for (l_node = tree->l_root, l_save = NULL; l_node; ) {
+         if      (key > l_node->key) SAVE_AND_RIGHT(l_node, l_save);
+         else if (key < l_node->key) CONTINUE_LEFT (l_node);
+         else                        return l_node->data;
+      }
+      if (l_save) return l_save->data;
+   CASE L_COR_DUP:
+      key = CORRECT(key);
+   case L_VAL_DUP:
+      for (l_node = tree->l_root, l_save = NULL; l_node; ) {
+         if (key < l_node->key) CONTINUE_LEFT (l_node);
+         else                   SAVE_AND_RIGHT(l_node, l_save);
+      }
+      if (l_save) return l_save->data;
+   }
+   return NULL;
+}
+
+void *avl_locate_le_int   (TREE *tree, int    key) { return avl_locate_le_long(tree, key); }
+void *avl_locate_le_short (TREE *tree, short  key) { return avl_locate_le_long(tree, key); }
+void *avl_locate_le_schar (TREE *tree, SCHAR  key) { return avl_locate_le_long(tree, key); }
+void *avl_locate_le_ulong (TREE *tree, ULONG  key) { return avl_locate_le_long(tree, key); }
+void *avl_locate_le_uint  (TREE *tree, UINT   key) { return avl_locate_le_long(tree, key); }
+void *avl_locate_le_ushort(TREE *tree, USHORT key) { return avl_locate_le_long(tree, key); }
+void *avl_locate_le_uchar (TREE *tree, UCHAR  key) { return avl_locate_le_long(tree, key); }
+
+/*---------------------------------------------------------------------------*/
+
+void *avl_locate_le_float(TREE *tree, float key)
+{
+   if (IS_X(tree)) return avl_locate_le     (tree, &key);
+   else            return avl_locate_le_long(tree, flt2lng(key));
+}
+
+void *avl_locate_le_double(TREE *tree, double key)
+{
+   if (IS_X(tree)) return avl_locate_le     (tree, &key);
+   else            return avl_locate_le_long(tree, dbl2lng(key));
+}
+
+/*---------------------------------------------------------------------------*/
+
+void *avl_locate_lt(TREE *tree, void *key)
+{
+   X_NODE *x_node, *x_save;
+   L_NODE *l_node, *l_save;
+   int     cmp;
+   long    l_key;
+   char   *keytail;
+
+   switch (CMPTYPE(tree)) {
+   CASE X_USR_CMP:
+      for (x_node = tree->x_root, x_save = NULL; x_node; ) {
+         cmp = CMP(tree->usrcmp, key, x_node->data, 0, false);
+         if (cmp > 0) SAVE_AND_RIGHT(x_node, x_save);
+         else         CONTINUE_LEFT (x_node);
+      }
+      if (x_save) return x_save->data;
+   CASE X_MBR_CMP:
+      for (x_node = tree->x_root, x_save = NULL; x_node; ) {
+         cmp = CMP(tree->usrcmp, key, x_node->data, tree->keyoffs, false);
+         if (cmp > 0) SAVE_AND_RIGHT(x_node, x_save);
+         else         CONTINUE_LEFT (x_node);
+      }
+      if (x_save) return x_save->data;
+   CASE X_PTR_CMP:
+      for (x_node = tree->x_root, x_save = NULL; x_node; ) {
+         cmp = CMP(tree->usrcmp, key, x_node->data, tree->keyoffs, true);
+         if (cmp > 0) SAVE_AND_RIGHT(x_node, x_save);
+         else         CONTINUE_LEFT (x_node);
+      }
+      if (x_save) return x_save->data;
+   CASE L_CHA_CMP:
+      l_key = l_key_of(key, &keytail);
+      for (l_node = tree->l_root, l_save = NULL; l_node; ) {
+         if      (l_key > l_node->key) SAVE_AND_RIGHT(l_node, l_save);
+         else if (l_key < l_node->key) CONTINUE_LEFT (l_node);
+         else if (keytail) {
+            cmp = TAILCMP(keytail, l_node->data, tree->keyoffs, false);
+            if (cmp > 0) SAVE_AND_RIGHT(l_node, l_save);
+            else         CONTINUE_LEFT (l_node);
+         } else          CONTINUE_LEFT (l_node);
+      }
+      if (l_save) return l_save->data;
+   CASE L_STR_CMP:
+      l_key = l_key_of(key, &keytail);
+      for (l_node = tree->l_root, l_save = NULL; l_node; ) {
+         if      (l_key > l_node->key) SAVE_AND_RIGHT(l_node, l_save);
+         else if (l_key < l_node->key) CONTINUE_LEFT (l_node);
+         else if (keytail) {
+            cmp = TAILCMP(keytail, l_node->data, tree->keyoffs, true);
+            if (cmp > 0) SAVE_AND_RIGHT(l_node, l_save);
+            else         CONTINUE_LEFT (l_node);
+         } else          CONTINUE_LEFT (l_node);
+      }
+      if (l_save) return l_save->data;
+   }
+   return NULL;
+}
+
+void *avl_locate_lt_mbr  (TREE *tree, void *key) { return avl_locate_lt(tree, key); }
+void *avl_locate_lt_ptr  (TREE *tree, void *key) { return avl_locate_lt(tree, key); }
+void *avl_locate_lt_chars(TREE *tree, char *key) { return avl_locate_lt(tree, key); }
+void *avl_locate_lt_str  (TREE *tree, char *key) { return avl_locate_lt(tree, key); }
+
+/*---------------------------------------------------------------------------*/
+
+void *avl_locate_lt_long(TREE *tree, long key)
+{
+   L_NODE *l_node, *l_save;
+
+   switch (CMPTYPE(tree)) {
+   CASE L_COR_CMP:
+      key = CORRECT(key);
+   case L_VAL_CMP:
+      for (l_node = tree->l_root, l_save = NULL; l_node; ) {
+         if (key > l_node->key) SAVE_AND_RIGHT(l_node, l_save);
+         else                   CONTINUE_LEFT (l_node);
+      }
+      if (l_save) return l_save->data;
+   }
+   return NULL;
+}
+
+void *avl_locate_lt_int   (TREE *tree, int    key) { return avl_locate_lt_long(tree, key); }
+void *avl_locate_lt_short (TREE *tree, short  key) { return avl_locate_lt_long(tree, key); }
+void *avl_locate_lt_schar (TREE *tree, SCHAR  key) { return avl_locate_lt_long(tree, key); }
+void *avl_locate_lt_ulong (TREE *tree, ULONG  key) { return avl_locate_lt_long(tree, key); }
+void *avl_locate_lt_uint  (TREE *tree, UINT   key) { return avl_locate_lt_long(tree, key); }
+void *avl_locate_lt_ushort(TREE *tree, USHORT key) { return avl_locate_lt_long(tree, key); }
+void *avl_locate_lt_uchar (TREE *tree, UCHAR  key) { return avl_locate_lt_long(tree, key); }
+
+/*---------------------------------------------------------------------------*/
+
+void *avl_locate_lt_float(TREE *tree, float key)
+{
+   if (IS_X(tree)) return avl_locate_lt     (tree, &key);
+   else            return avl_locate_lt_long(tree, flt2lng(key));
+}
+
+void *avl_locate_lt_double(TREE *tree, double key)
+{
+   if (IS_X(tree)) return avl_locate_lt     (tree, &key);
+   else            return avl_locate_lt_long(tree, dbl2lng(key));
+}
 
 /*---------------------------------------------------------------------------*/
 
 void *avl_locate_first(TREE *tree)
 {
-   NODE *node, *leftnode;
+   X_NODE *x_node;
+   L_NODE *l_node;
 
-   node = tree->root;
-   if ( !node) {
-      return NULL;
+   if (tree->root) {
+      if (IS_X(tree)) {
+         for (x_node = tree->root; x_node->left; CONTINUE_LEFT(x_node)) {}
+         return x_node->data;
+      } else {
+         for (l_node = tree->root; l_node->left; CONTINUE_LEFT(l_node)) {}
+         return l_node->data;
+      }
    }
-   while ((leftnode = node->left)) {
-      node = leftnode;
-   }
-   return node->data;
+   return NULL;
 }
 
 /*---------------------------------------------------------------------------*/
 
 void *avl_locate_last(TREE *tree)
 {
-   NODE *node, *rightnode;
+   X_NODE *x_node;
+   L_NODE *l_node;
 
-   node = tree->root;
-   if ( !node) {
-      return NULL;
+   if (tree->root) {
+      if (IS_X(tree)) {
+         for (x_node = tree->root; x_node->right; CONTINUE_RIGHT(x_node)) {}
+         return x_node->data;
+      } else {
+         for (l_node = tree->root; l_node->right; CONTINUE_RIGHT(l_node)) {}
+         return l_node->data;
+      }
    }
-   while ((rightnode = node->right)) {
-      node = rightnode;
-   }
-   return node->data;
+   return NULL;
 }
 
 /*===========================================================================*/
 
-static void *scan_subtree(NODE *root, bool (*callback)(void *))
+static void *scan_x(X_NODE *x_root, bool (*callback)(void *))
 {
    void *data;
 
-   if (root->left) {
-      if ((data = scan_subtree(root->left,  callback))) return data;
-   }
-   if ((*callback)(root->data)) return root->data;
-   if (root->right) {
-      if ((data = scan_subtree(root->right, callback))) return data;
-   }
+   if (x_root->left  && (data = scan_x(PTR_OF(x_root->left),  callback))) return data;
+   if ((*callback)(x_root->data)) return x_root->data;
+   if (x_root->right && (data = scan_x(PTR_OF(x_root->right), callback))) return data;
    return NULL;
 }
 
 /*---------------------------------------------------------------------------*/
 
-static void *backscan_subtree(NODE *root, bool (*callback)(void *))
+static void *scan_l(L_NODE *l_root, bool (*callback)(void *))
 {
    void *data;
 
-   if (root->right) {
-      if ((data = backscan_subtree(root->right, callback))) return data;
-   }
-   if ((*callback)(root->data)) return root->data;
-   if (root->left) {
-      if ((data = backscan_subtree(root->left,  callback))) return data;
-   }
+   if (l_root->left  && (data = scan_l(PTR_OF(l_root->left),  callback))) return data;
+   if ((*callback)(l_root->data)) return l_root->data;
+   if (l_root->right && (data = scan_l(PTR_OF(l_root->right), callback))) return data;
+   return NULL;
+}
+
+/*---------------------------------------------------------------------------*/
+
+static void *rev_scan_x(X_NODE *x_root, bool (*callback)(void *))
+{
+   void *data;
+
+   if (x_root->right && (data = rev_scan_x(PTR_OF(x_root->right), callback))) return data;
+   if ((*callback)(x_root->data)) return x_root->data;
+   if (x_root->left  && (data = rev_scan_x(PTR_OF(x_root->left),  callback))) return data;
+   return NULL;
+}
+
+/*---------------------------------------------------------------------------*/
+
+static void *rev_scan_l(L_NODE *l_root, bool (*callback)(void *))
+{
+   void *data;
+
+   if (l_root->right && (data = rev_scan_l(PTR_OF(l_root->right), callback))) return data;
+   if ((*callback)(l_root->data)) return l_root->data;
+   if (l_root->left  && (data = rev_scan_l(PTR_OF(l_root->left),  callback))) return data;
    return NULL;
 }
 
@@ -1230,79 +2051,220 @@ static void *backscan_subtree(NODE *root, bool (*callback)(void *))
 
 void *avl_scan(TREE *tree, bool (*callback)(void *))
 {
-   return tree->root ? scan_subtree(tree->root, callback) : NULL;
+   if (tree->root) {
+      if (IS_X(tree)) return scan_x(tree->x_root, callback);
+      else            return scan_l(tree->l_root, callback);
+   }
+   return NULL;
 }
 
 /*---------------------------------------------------------------------------*/
 
-void *avl_backscan(TREE *tree, bool (*callback)(void *))
+void *avl_rev_scan(TREE *tree, bool (*callback)(void *))
 {
-   return tree->root ? backscan_subtree(tree->root, callback) : NULL;
+   if (tree->root) {
+      if (IS_X(tree)) return rev_scan_x(tree->x_root, callback);
+      else            return rev_scan_l(tree->l_root, callback);
+   }
+   return NULL;
 }
 
 /*===========================================================================*/
 
-static void *walk_subtree(NODE *root, bool (*callback)(void *, void *), void *context)
+static void *scan_w_ctx_x(X_NODE *x_root, bool (*callback)(void *, void *), void *context)
 {
    void *data;
 
-   if (root->left) {
-      if ((data = walk_subtree(root->left,  callback, context))) return data;
-   }
-   if ((*callback)(root->data, context)) return root->data;
-   if (root->right) {
-      if ((data = walk_subtree(root->right, callback, context))) return data;
+   if (x_root->left  && (data = scan_w_ctx_x(PTR_OF(x_root->left),  callback, context))) return data;
+   if ((*callback)(x_root->data, context)) return x_root->data;
+   if (x_root->right && (data = scan_w_ctx_x(PTR_OF(x_root->right), callback, context))) return data;
+   return NULL;
+}
+
+/*---------------------------------------------------------------------------*/
+
+static void *scan_w_ctx_l(L_NODE *l_root, bool (*callback)(void *, void *), void *context)
+{
+   void *data;
+
+   if (l_root->left  && (data = scan_w_ctx_l(PTR_OF(l_root->left),  callback, context))) return data;
+   if ((*callback)(l_root->data, context)) return l_root->data;
+   if (l_root->right && (data = scan_w_ctx_l(PTR_OF(l_root->right), callback, context))) return data;
+   return NULL;
+}
+
+/*---------------------------------------------------------------------------*/
+
+static void *rev_scan_w_ctx_x(X_NODE *x_root, bool (*callback)(void *, void *), void *context)
+{
+   void *data;
+
+   if (x_root->right && (data = rev_scan_w_ctx_x(PTR_OF(x_root->right), callback, context))) return data;
+   if ((*callback)(x_root->data, context)) return x_root->data;
+   if (x_root->left  && (data = rev_scan_w_ctx_x(PTR_OF(x_root->left),  callback, context))) return data;
+   return NULL;
+}
+
+/*---------------------------------------------------------------------------*/
+
+static void *rev_scan_w_ctx_l(L_NODE *l_root, bool (*callback)(void *, void *), void *context)
+{
+   void *data;
+
+   if (l_root->right && (data = rev_scan_w_ctx_l(PTR_OF(l_root->right), callback, context))) return data;
+   if ((*callback)(l_root->data, context)) return l_root->data;
+   if (l_root->left  && (data = rev_scan_w_ctx_l(PTR_OF(l_root->left),  callback, context))) return data;
+   return NULL;
+}
+
+/*---------------------------------------------------------------------------*/
+
+void *avl_scan_w_ctx(TREE *tree, bool (*callback)(void *, void *), void *context)
+{
+   if (tree->root) {
+      if (IS_X(tree)) return scan_w_ctx_x(tree->x_root, callback, context);
+      else            return scan_w_ctx_l(tree->l_root, callback, context);
    }
    return NULL;
 }
 
 /*---------------------------------------------------------------------------*/
 
-static void *backwalk_subtree(NODE *root, bool (*callback)(void *, void *), void *context)
+void *avl_rev_scan_w_ctx(TREE *tree, bool (*callback)(void *, void *), void *context)
 {
-   void *data;
-
-   if (root->left) {
-      if ((data = backwalk_subtree(root->left,  callback, context))) return data;
-   }
-   if ((*callback)(root->data, context)) return root->data;
-   if (root->right) {
-      if ((data = backwalk_subtree(root->right, callback, context))) return data;
+   if (tree->root) {
+      if (IS_X(tree)) return rev_scan_w_ctx_x(tree->x_root, callback, context);
+      else            return rev_scan_w_ctx_l(tree->l_root, callback, context);
    }
    return NULL;
 }
 
-/*---------------------------------------------------------------------------*/
+/*===========================================================================*/
 
-void *avl_walk(TREE *tree, bool (*callback)(void *, void *), void *context)
+static void do_x(X_NODE *x_root, void (*callback)(void *))
 {
-   return tree->root ? walk_subtree(tree->root, callback, context) : NULL;
+   if (x_root->left)  do_x(PTR_OF(x_root->left),  callback);
+   (*callback)(x_root->data);
+   if (x_root->right) do_x(PTR_OF(x_root->right), callback);
 }
 
 /*---------------------------------------------------------------------------*/
 
-void *avl_backwalk(TREE *tree, bool (*callback)(void *, void *), void *context)
+static void do_l(L_NODE *l_root, void (*callback)(void *))
 {
-   return tree->root ? backwalk_subtree(tree->root, callback, context) : NULL;
+   if (l_root->left)  do_l(PTR_OF(l_root->left),  callback);
+   (*callback)(l_root->data);
+   if (l_root->right) do_l(PTR_OF(l_root->right), callback);
+}
+
+/*---------------------------------------------------------------------------*/
+
+static void rev_do_x(X_NODE *x_root, void (*callback)(void *))
+{
+   if (x_root->right) rev_do_x(PTR_OF(x_root->right), callback);
+   (*callback)(x_root->data);
+   if (x_root->left)  rev_do_x(PTR_OF(x_root->left),  callback);
+}
+
+/*---------------------------------------------------------------------------*/
+
+static void rev_do_l(L_NODE *l_root, void (*callback)(void *))
+{
+   if (l_root->right) rev_do_l(PTR_OF(l_root->right), callback);
+   (*callback)(l_root->data);
+   if (l_root->left)  rev_do_l(PTR_OF(l_root->left),  callback);
+}
+
+/*---------------------------------------------------------------------------*/
+
+void avl_do(TREE *tree, void (*callback)(void *))
+{
+   if (tree->root) {
+      if (IS_X(tree)) do_x(tree->x_root, callback);
+      else            do_l(tree->l_root, callback);
+   }
+}
+
+/*---------------------------------------------------------------------------*/
+
+void avl_rev_do(TREE *tree, void (*callback)(void *))
+{
+   if (tree->root) {
+      if (IS_X(tree)) rev_do_x(tree->x_root, callback);
+      else            rev_do_l(tree->l_root, callback);
+   }
+}
+
+/*===========================================================================*/
+
+static void do_w_ctx_x(X_NODE *x_root, void (*callback)(void *, void *), void *context)
+{
+   if (x_root->left)  do_w_ctx_x(PTR_OF(x_root->left),  callback, context);
+   (*callback)(x_root->data, context);
+   if (x_root->right) do_w_ctx_x(PTR_OF(x_root->right), callback, context);
+}
+
+/*---------------------------------------------------------------------------*/
+
+static void do_w_ctx_l(L_NODE *l_root, void (*callback)(void *, void *), void *context)
+{
+   if (l_root->left)  do_w_ctx_l(PTR_OF(l_root->left),  callback, context);
+   (*callback)(l_root->data, context);
+   if (l_root->right) do_w_ctx_l(PTR_OF(l_root->right), callback, context);
+}
+
+/*---------------------------------------------------------------------------*/
+
+static void rev_do_w_ctx_x(X_NODE *x_root, void (*callback)(void *, void *), void *context)
+{
+   if (x_root->right) rev_do_w_ctx_x(PTR_OF(x_root->right), callback, context);
+   (*callback)(x_root->data, context);
+   if (x_root->left)  rev_do_w_ctx_x(PTR_OF(x_root->left),  callback, context);
+}
+
+/*---------------------------------------------------------------------------*/
+
+static void rev_do_w_ctx_l(L_NODE *l_root, void (*callback)(void *, void *), void *context)
+{
+   if (l_root->right) rev_do_w_ctx_l(PTR_OF(l_root->right), callback, context);
+   (*callback)(l_root->data, context);
+   if (l_root->left)  rev_do_w_ctx_l(PTR_OF(l_root->left),  callback, context);
+}
+
+/*---------------------------------------------------------------------------*/
+
+void avl_do_w_ctx(TREE *tree, void (*callback)(void *, void *), void *context)
+{
+   if (tree->root) {
+      if (IS_X(tree)) do_w_ctx_x(tree->x_root, callback, context);
+      else            do_w_ctx_l(tree->l_root, callback, context);
+   }
+}
+
+/*---------------------------------------------------------------------------*/
+
+void avl_rev_do_w_ctx(TREE *tree, void (*callback)(void *, void *), void *context)
+{
+   if (tree->root) {
+      if (IS_X(tree)) rev_do_w_ctx_x(tree->x_root, callback, context);
+      else            rev_do_w_ctx_l(tree->l_root, callback, context);
+   }
 }
 
 /*===========================================================================*/
 
 void *avl_first(TREE *tree)
 {
-   PATH  *path;
-   char  *pathright;
-   NODE **pathnode;
-   NODE  *node;
+   PATH   *path;
+   char   *pathright;
+   void  **pathnode;
+   X_NODE *x_node;
+   L_NODE *l_node;
 
-   if ( !tree->root) {
-      return NULL;
-   }
+   if ( !tree->root) return NULL;
    if ( !tree->path) {
-      ALLOC_PATH(path);
-      if ( !path) {
-         return NULL;
-      }
+      path = AVL_MALLOC(sizeof(*path));
+      if ( !path) return NULL;
       tree->path = path;
    } else {
       path = tree->path;
@@ -1312,34 +2274,39 @@ void *avl_first(TREE *tree)
    *  pathnode  = NULL; /* sentinels */
    *  pathright = true;
    *++pathnode  = NULL;
-   *++pathright = false;
-   *++pathnode  = node = tree->root;
-   while ((node = node->left)) {
-      *++pathright = false;
-      *++pathnode  = node;
+   if (IS_X(tree)) {
+      for (x_node = tree->root; x_node; CONTINUE_LEFT(x_node)) {
+         *++pathright = false;
+         *++pathnode  = x_node;
+      }
+      path->pathright = pathright;
+      path->pathnode  = pathnode;
+      return ((X_NODE *)(*pathnode))->data;
+   } else {
+      for (l_node = tree->root; l_node; CONTINUE_LEFT(l_node)) {
+         *++pathright = false;
+         *++pathnode  = l_node;
+      }
+      path->pathright = pathright;
+      path->pathnode  = pathnode;
+      return ((L_NODE *)(*pathnode))->data;
    }
-   path->pathright = pathright;
-   path->pathnode  = pathnode;
-   return (*pathnode)->data;
 }
 
 /*---------------------------------------------------------------------------*/
 
 void *avl_last(TREE *tree)
 {
-   PATH  *path;
-   char  *pathright;
-   NODE **pathnode;
-   NODE  *node;
+   PATH   *path;
+   char   *pathright;
+   void  **pathnode;
+   X_NODE *x_node;
+   L_NODE *l_node;
 
-   if ( !tree->root) {
-      return NULL;
-   }
+   if ( !tree->root) return NULL;
    if ( !tree->path) {
-      ALLOC_PATH(path);
-      if ( !path) {
-         return NULL;
-      }
+      path = AVL_MALLOC(sizeof(*path));
+      if ( !path) return NULL;
       tree->path = path;
    } else {
       path = tree->path;
@@ -1349,21 +2316,29 @@ void *avl_last(TREE *tree)
    *  pathnode  = NULL; /* sentinels */
    *  pathright = false;
    *++pathnode  = NULL;
-   *++pathright = true;
-   *++pathnode  = node = tree->root;
-   while ((node = node->right)) {
-      *++pathright = true;
-      *++pathnode  = node;
+   if (IS_X(tree)) {
+      for (x_node = tree->root; x_node; CONTINUE_RIGHT(x_node)) {
+         *++pathright = true;
+         *++pathnode  = x_node;
+      }
+      path->pathright = pathright;
+      path->pathnode  = pathnode;
+      return ((X_NODE *)(*pathnode))->data;
+   } else {
+      for (l_node = tree->root; l_node; CONTINUE_RIGHT(l_node)) {
+         *++pathright = true;
+         *++pathnode  = l_node;
+      }
+      path->pathright = pathright;
+      path->pathnode  = pathnode;
+      return ((L_NODE *)(*pathnode))->data;
    }
-   path->pathright = pathright;
-   path->pathnode  = pathnode;
-   return (*pathnode)->data;
 }
 
 /*---------------------------------------------------------------------------*/
 
 #define DOWN_RIGHT_OR_BREAK(node, pathright, pathnode) { \
-   (node) = (node)->right; \
+   CONTINUE_RIGHT(node); \
    if (node) { \
       *++(pathright) = true; \
       *++(pathnode)  = (node); \
@@ -1372,7 +2347,7 @@ void *avl_last(TREE *tree)
    } \
 }
 #define DOWN_LEFT_OR_BREAK(node, pathright, pathnode) { \
-   (node) = (node)->left; \
+   CONTINUE_LEFT(node); \
    if (node) { \
       *++(pathright) = false; \
       *++(pathnode)  = (node); \
@@ -1380,234 +2355,443 @@ void *avl_last(TREE *tree)
       break; \
    } \
 }
-#define START_OK_AND_RETURN(path, _pathright, _pathnode) { \
-   (path)->pathright = (_pathright); \
-   (path)->pathnode  = (_pathnode); \
-   return (*_pathnode)->data; \
-}
 
 /*---------------------------------------------------------------------------*/
 
-static void *avl_f_start(TREE *tree, long keyval, bool back)
+static void *start_x_l(TREE *tree, void *key, bool rev)
 {
-   PATH  *path;
-   char  *pathright;
-   NODE **pathnode;
-   NODE  *node;
-   char  *saveright;
-   NODE **savenode;
-   CMPFUN usrcmp;
-   int    cmp;
+   PATH    *path;
+   char    *pathright;
+   X_NODE **x_pathnode;
+   L_NODE **l_pathnode;
+   X_NODE  *x_node;
+   L_NODE  *l_node;
+   char    *saveright;
+   X_NODE **x_savenode;
+   L_NODE **l_savenode;
+   long     l_key;
+   char    *keytail;
+   int      cmp;
+   bool     ind = false;
 
-   if ( !tree->root) {
-      return NULL;
-   }
+   if ( !tree->root) return NULL;
    if ( !tree->path) {
-      ALLOC_PATH(path);
-      if ( !path) {
-         return NULL;
-      }
+      path = AVL_MALLOC(sizeof(*path));
+      if ( !path) return NULL;
       tree->path = path;
    } else {
       path = tree->path;
    }
-   pathnode  = &path->node [0];
-   pathright = &path->right[1];
-   saveright = NULL;
-   savenode  = NULL;
-   *  pathnode  = NULL; /* sentinels */
-   *  pathright = !back;
-   *++pathnode  = NULL;
-   *++pathright = back;
-   *++pathnode  = node = tree->root;
-   switch (LOCTYPE(tree->keyinfo)) {
-   CASE USR_NODUP:
-   case STR_NODUP:
-      usrcmp = tree->usrcmp;
-      if (back) {
-         for (;;) {
-            cmp = PTRCMP(usrcmp, keyval, node->key.ptr);
+   x_pathnode    = &path->x_node[0];
+   l_pathnode    = &path->l_node[0];
+   pathright     = &path->right [1];
+   saveright     = NULL;
+   x_savenode    = NULL;
+   l_savenode    = NULL;
+   *x_pathnode   = NULL; /* sentinels */
+   *pathright    = !rev;
+   *++x_pathnode = NULL;
+    ++l_pathnode;
+   *++pathright  = rev;
+   *++x_pathnode = tree->root;
+    ++l_pathnode;
+   switch (tree->bits) {
+   CASE X_PTR_NODUP:
+      ind = true;
+   case X_MBR_NODUP:
+   case X_USR_NODUP:
+      if (rev) {
+         for (x_node = tree->root; ; ) {
+            cmp = CMP(tree->usrcmp, key, x_node->data, tree->keyoffs, ind);
             if (cmp > 0) {
-               saveright = pathright;
-               savenode  = pathnode;
-               DOWN_RIGHT_OR_BREAK(node, pathright, pathnode)
+               saveright  = pathright;
+               x_savenode = x_pathnode;
+               DOWN_RIGHT_OR_BREAK(x_node, pathright, x_pathnode)
             } else if (cmp < 0) {
-               DOWN_LEFT_OR_BREAK (node, pathright, pathnode)
+               DOWN_LEFT_OR_BREAK (x_node, pathright, x_pathnode)
             } else {
-               START_OK_AND_RETURN(path, pathright, pathnode)
+               path->pathright  = pathright;
+               path->x_pathnode = x_pathnode;
+               return (*x_pathnode)->data;
             }
          }
       } else {
-         for (;;) {
-            cmp = PTRCMP(usrcmp, keyval, node->key.ptr);
+         for (x_node = tree->root; ; ) {
+            cmp = CMP(tree->usrcmp, key, x_node->data, tree->keyoffs, ind);
             if (cmp < 0) {
-               saveright = pathright;
-               savenode  = pathnode;
-               DOWN_LEFT_OR_BREAK (node, pathright, pathnode)
+               saveright  = pathright;
+               x_savenode = x_pathnode;
+               DOWN_LEFT_OR_BREAK (x_node, pathright, x_pathnode)
             } else if (cmp > 0) {
-               DOWN_RIGHT_OR_BREAK(node, pathright, pathnode)
+               DOWN_RIGHT_OR_BREAK(x_node, pathright, x_pathnode)
             } else {
-               START_OK_AND_RETURN(path, pathright, pathnode)
+               path->pathright  = pathright;
+               path->x_pathnode = x_pathnode;
+               return (*x_pathnode)->data;
             }
          }
       }
-   CASE COR_NODUP:
-      keyval = CORRECT(keyval);
-   case VAL_NODUP:
-      if (back) {
-         for (;;) {
-            if (keyval > node->key.val) {
-               saveright = pathright;
-               savenode  = pathnode;
-               DOWN_RIGHT_OR_BREAK(node, pathright, pathnode)
-            } else if (keyval < node->key.val) {
-               DOWN_LEFT_OR_BREAK (node, pathright, pathnode)
+   CASE L_STR_NODUP:
+      ind = true;
+   case L_CHA_NODUP:
+      l_key = l_key_of(key, &keytail);
+      if (rev) {
+         for (l_node = tree->root; ; ) {
+            if (l_key > l_node->key) {
+               rev_start_nodup_gt:
+               saveright  = pathright;
+               l_savenode = l_pathnode;
+               DOWN_RIGHT_OR_BREAK(l_node, pathright, l_pathnode)
+            } else if (l_key < l_node->key) {
+               rev_start_nodup_lt:
+               DOWN_LEFT_OR_BREAK (l_node, pathright, l_pathnode)
+            } else if ( !keytail) {
+               rev_start_nodup_eq:
+               path->pathright  = pathright;
+               path->l_pathnode = l_pathnode;
+               return (*l_pathnode)->data;
             } else {
-               START_OK_AND_RETURN(path, pathright, pathnode)
+               cmp = TAILCMP(keytail, l_node->data, tree->keyoffs, ind);
+               if (cmp > 0) {
+                  goto rev_start_nodup_gt;
+               } else if (cmp < 0) {
+                  goto rev_start_nodup_lt;
+               } else {
+                  goto rev_start_nodup_eq;
+               }
             }
          }
       } else {
-         for (;;) {
-            if (keyval < node->key.val) {
-               saveright = pathright;
-               savenode  = pathnode;
-               DOWN_LEFT_OR_BREAK (node, pathright, pathnode)
-            } else if (keyval > node->key.val) {
-               DOWN_RIGHT_OR_BREAK(node, pathright, pathnode)
+         for (l_node = tree->root; ; ) {
+            if (l_key < l_node->key) {
+               start_nodup_lt:
+               saveright  = pathright;
+               l_savenode = l_pathnode;
+               DOWN_LEFT_OR_BREAK (l_node, pathright, l_pathnode)
+            } else if (l_key > l_node->key) {
+               start_nodup_gt:
+               DOWN_RIGHT_OR_BREAK(l_node, pathright, l_pathnode)
+            } else if ( !keytail) {
+               start_nodup_eq:
+               path->pathright  = pathright;
+               path->l_pathnode = l_pathnode;
+               return (*l_pathnode)->data;
             } else {
-               START_OK_AND_RETURN(path, pathright, pathnode)
+               cmp = TAILCMP(keytail, l_node->data, tree->keyoffs, ind);
+               if (cmp < 0) {
+                  goto start_nodup_lt;
+               } else if (cmp > 0) {
+                  goto start_nodup_gt;
+               } else {
+                  goto start_nodup_eq;
+               }
             }
          }
       }
-   CASE USR_DUP:
-   case STR_DUP:
-      usrcmp = tree->usrcmp;
-      if (back) {
-         for (;;) {
-            cmp = PTRCMP(usrcmp, keyval, node->key.ptr);
+   CASE X_PTR_DUP:
+      ind = true;
+   case X_MBR_DUP:
+   case X_USR_DUP:
+      if (rev) {
+         for (x_node = tree->root; ; ) {
+            cmp = CMP(tree->usrcmp, key, x_node->data, tree->keyoffs, ind);
             if (cmp >= 0) {
-               saveright = pathright;
-               savenode  = pathnode;
-               DOWN_RIGHT_OR_BREAK(node, pathright, pathnode)
+               saveright  = pathright;
+               x_savenode = x_pathnode;
+               DOWN_RIGHT_OR_BREAK(x_node, pathright, x_pathnode)
             } else {
-               DOWN_LEFT_OR_BREAK (node, pathright, pathnode)
+               DOWN_LEFT_OR_BREAK (x_node, pathright, x_pathnode)
             }
          }
       } else {
-         for (;;) {
-            cmp = PTRCMP(usrcmp, keyval, node->key.ptr);
+         for (x_node = tree->root; ; ) {
+            cmp = CMP(tree->usrcmp, key, x_node->data, tree->keyoffs, ind);
             if (cmp <= 0) {
-               saveright = pathright;
-               savenode  = pathnode;
-               DOWN_LEFT_OR_BREAK (node, pathright, pathnode)
+               saveright  = pathright;
+               x_savenode = x_pathnode;
+               DOWN_LEFT_OR_BREAK (x_node, pathright, x_pathnode)
             } else {
-               DOWN_RIGHT_OR_BREAK(node, pathright, pathnode)
+               DOWN_RIGHT_OR_BREAK(x_node, pathright, x_pathnode)
             }
          }
       }
-   CASE COR_DUP:
-      keyval = CORRECT(keyval);
-   case VAL_DUP:
-      if (back) {
-         for (;;) {
-            if (keyval >= node->key.val) {
-               saveright = pathright;
-               savenode  = pathnode;
-               DOWN_RIGHT_OR_BREAK(node, pathright, pathnode)
+   CASE L_STR_DUP:
+      ind = true;
+   case L_CHA_DUP:
+      l_key = l_key_of(key, &keytail);
+      if (rev) {
+         for (l_node = tree->root; ; ) {
+            if (l_key < l_node->key) {
+               rev_start_dup_lt:
+               DOWN_LEFT_OR_BREAK (l_node, pathright, l_pathnode)
+            } else if (l_key > l_node->key || !keytail) {
+               rev_start_dup_ge:
+               saveright  = pathright;
+               l_savenode = l_pathnode;
+               DOWN_RIGHT_OR_BREAK(l_node, pathright, l_pathnode)
             } else {
-               DOWN_LEFT_OR_BREAK (node, pathright, pathnode)
+               cmp = TAILCMP(keytail, l_node->data, tree->keyoffs, ind);
+               if (cmp >= 0) {
+                  goto rev_start_dup_ge;
+               } else {
+                  goto rev_start_dup_lt;
+               }
             }
          }
       } else {
-         for (;;) {
-            if (keyval <= node->key.val) {
-               saveright = pathright;
-               savenode  = pathnode;
-               DOWN_LEFT_OR_BREAK (node, pathright, pathnode)
+         for (l_node = tree->root; ; ) {
+            if (l_key > l_node->key) {
+               start_dup_gt:
+               DOWN_RIGHT_OR_BREAK(l_node, pathright, l_pathnode)
+            } else if (l_key < l_node->key || !keytail) {
+               start_dup_le:
+               saveright  = pathright;
+               l_savenode = l_pathnode;
+               DOWN_LEFT_OR_BREAK (l_node, pathright, l_pathnode)
             } else {
-               DOWN_RIGHT_OR_BREAK(node, pathright, pathnode)
+               cmp = TAILCMP(keytail, l_node->data, tree->keyoffs, ind);
+               if (cmp <= 0) {
+                  goto start_dup_le;
+               } else {
+                  goto start_dup_gt;
+               }
             }
          }
       }
    }
-   if (savenode) {
-      path->pathright = saveright;
-      path->pathnode  = savenode;
-      return (*savenode)->data;
-   } else {
-      FREE_PATH(path);
-      tree->path = NULL;
-      return NULL;
+   if (x_savenode) {
+      path->pathright  = saveright;
+      path->x_pathnode = x_savenode;
+      return (*x_savenode)->data;
    }
+   if (l_savenode) {
+      path->pathright  = saveright;
+      path->l_pathnode = l_savenode;
+      return (*l_savenode)->data;
+   }
+   AVL_FREE_AND_NULL(tree->path);
+   return NULL;
 }
 
-void *avl_start       (TREE *tree, void          *key) { return avl_f_start(tree, (long)key, false); }
-void *avl_start_mbr   (TREE *tree, void          *key) { return avl_f_start(tree, (long)key, false); }
-void *avl_start_chars (TREE *tree, char          *key) { return avl_f_start(tree, (long)key, false); }
-void *avl_start_ptr   (TREE *tree, void          *key) { return avl_f_start(tree, (long)key, false); }
-void *avl_start_str   (TREE *tree, char          *key) { return avl_f_start(tree, (long)key, false); }
-void *avl_start_long  (TREE *tree, long           key) { return avl_f_start(tree, (long)key, false); }
-void *avl_start_int   (TREE *tree, int            key) { return avl_f_start(tree, (long)key, false); }
-void *avl_start_short (TREE *tree, short          key) { return avl_f_start(tree, (long)key, false); }
-void *avl_start_schar (TREE *tree, signed char    key) { return avl_f_start(tree, (long)key, false); }
-void *avl_start_ulong (TREE *tree, unsigned long  key) { return avl_f_start(tree, (long)key, false); }
-void *avl_start_uint  (TREE *tree, unsigned int   key) { return avl_f_start(tree, (long)key, false); }
-void *avl_start_ushort(TREE *tree, unsigned short key) { return avl_f_start(tree, (long)key, false); }
-void *avl_start_uchar (TREE *tree, unsigned char  key) { return avl_f_start(tree, (long)key, false); }
+void *avl_start          (TREE *tree, void *key) { return start_x_l(tree, key, false); }
+void *avl_start_mbr      (TREE *tree, void *key) { return start_x_l(tree, key, false); }
+void *avl_start_ptr      (TREE *tree, void *key) { return start_x_l(tree, key, false); }
+void *avl_start_chars    (TREE *tree, char *key) { return start_x_l(tree, key, false); }
+void *avl_start_str      (TREE *tree, char *key) { return start_x_l(tree, key, false); }
 
-void *avl_backstart       (TREE *tree, void          *key) { return avl_f_start(tree, (long)key, true); }
-void *avl_backstart_mbr   (TREE *tree, void          *key) { return avl_f_start(tree, (long)key, true); }
-void *avl_backstart_chars (TREE *tree, char          *key) { return avl_f_start(tree, (long)key, true); }
-void *avl_backstart_ptr   (TREE *tree, void          *key) { return avl_f_start(tree, (long)key, true); }
-void *avl_backstart_str   (TREE *tree, char          *key) { return avl_f_start(tree, (long)key, true); }
-void *avl_backstart_long  (TREE *tree, long           key) { return avl_f_start(tree, (long)key, true); }
-void *avl_backstart_int   (TREE *tree, int            key) { return avl_f_start(tree, (long)key, true); }
-void *avl_backstart_short (TREE *tree, short          key) { return avl_f_start(tree, (long)key, true); }
-void *avl_backstart_schar (TREE *tree, signed char    key) { return avl_f_start(tree, (long)key, true); }
-void *avl_backstart_ulong (TREE *tree, unsigned long  key) { return avl_f_start(tree, (long)key, true); }
-void *avl_backstart_uint  (TREE *tree, unsigned int   key) { return avl_f_start(tree, (long)key, true); }
-void *avl_backstart_ushort(TREE *tree, unsigned short key) { return avl_f_start(tree, (long)key, true); }
-void *avl_backstart_uchar (TREE *tree, unsigned char  key) { return avl_f_start(tree, (long)key, true); }
+void *avl_rev_start      (TREE *tree, void *key) { return start_x_l(tree, key, true); }
+void *avl_rev_start_mbr  (TREE *tree, void *key) { return start_x_l(tree, key, true); }
+void *avl_rev_start_ptr  (TREE *tree, void *key) { return start_x_l(tree, key, true); }
+void *avl_rev_start_chars(TREE *tree, char *key) { return start_x_l(tree, key, true); }
+void *avl_rev_start_str  (TREE *tree, char *key) { return start_x_l(tree, key, true); }
+
+/*---------------------------------------------------------------------------*/
+
+static void *start_l(TREE *tree, long key, bool rev)
+{
+   PATH    *path;
+   char    *pathright;
+   L_NODE **l_pathnode;
+   L_NODE  *l_node;
+   char    *saveright;
+   L_NODE **l_savenode;
+
+   if ( !tree->root) return NULL;
+   if ( !tree->path) {
+      path = AVL_MALLOC(sizeof(*path));
+      if ( !path) return NULL;
+      tree->path = path;
+   } else {
+      path = tree->path;
+   }
+   l_pathnode    = &path->l_node[0];
+   pathright     = &path->right [1];
+   saveright     = NULL;
+   l_savenode    = NULL;
+   *l_pathnode   = NULL; /* sentinels */
+   *pathright    = !rev;
+   *++l_pathnode = NULL;
+   *++pathright  = rev;
+   *++l_pathnode = tree->root;
+   switch (tree->bits) {
+   CASE L_COR_NODUP:
+      key = CORRECT(key);
+   case L_VAL_NODUP:
+      if (rev) {
+         for (l_node = tree->root; ; ) {
+            if (key > l_node->key) {
+               saveright  = pathright;
+               l_savenode = l_pathnode;
+               DOWN_RIGHT_OR_BREAK(l_node, pathright, l_pathnode)
+            } else if (key < l_node->key) {
+               DOWN_LEFT_OR_BREAK (l_node, pathright, l_pathnode)
+            } else {
+               path->pathright  = pathright;
+               path->l_pathnode = l_pathnode;
+               return (*l_pathnode)->data;
+            }
+         }
+      } else {
+         for (l_node = tree->root; ; ) {
+            if (key < l_node->key) {
+               saveright  = pathright;
+               l_savenode = l_pathnode;
+               DOWN_LEFT_OR_BREAK (l_node, pathright, l_pathnode)
+            } else if (key > l_node->key) {
+               DOWN_RIGHT_OR_BREAK(l_node, pathright, l_pathnode)
+            } else {
+               path->pathright  = pathright;
+               path->l_pathnode = l_pathnode;
+               return (*l_pathnode)->data;
+            }
+         }
+      }
+   CASE L_COR_DUP:
+      key = CORRECT(key);
+   case L_VAL_DUP:
+      if (rev) {
+         for (l_node = tree->root; ; ) {
+            if (key >= l_node->key) {
+               saveright  = pathright;
+               l_savenode = l_pathnode;
+               DOWN_RIGHT_OR_BREAK(l_node, pathright, l_pathnode)
+            } else {
+               DOWN_LEFT_OR_BREAK (l_node, pathright, l_pathnode)
+            }
+         }
+      } else {
+         for (l_node = tree->root; ; ) {
+            if (key <= l_node->key) {
+               saveright  = pathright;
+               l_savenode = l_pathnode;
+               DOWN_LEFT_OR_BREAK (l_node, pathright, l_pathnode)
+            } else {
+               DOWN_RIGHT_OR_BREAK(l_node, pathright, l_pathnode)
+            }
+         }
+      }
+   }
+   if (l_savenode) {
+      path->pathright  = saveright;
+      path->l_pathnode = l_savenode;
+      return (*l_savenode)->data;
+   }
+   AVL_FREE_AND_NULL(tree->path);
+   return NULL;
+}
+
+void *avl_start_long      (TREE *tree, long   key) { return start_l(tree, key, false); }
+void *avl_start_int       (TREE *tree, int    key) { return start_l(tree, key, false); }
+void *avl_start_short     (TREE *tree, short  key) { return start_l(tree, key, false); }
+void *avl_start_schar     (TREE *tree, SCHAR  key) { return start_l(tree, key, false); }
+void *avl_start_ulong     (TREE *tree, ULONG  key) { return start_l(tree, key, false); }
+void *avl_start_uint      (TREE *tree, UINT   key) { return start_l(tree, key, false); }
+void *avl_start_ushort    (TREE *tree, USHORT key) { return start_l(tree, key, false); }
+void *avl_start_uchar     (TREE *tree, UCHAR  key) { return start_l(tree, key, false); }
+
+void *avl_rev_start_long  (TREE *tree, long   key) { return start_l(tree, key, true); }
+void *avl_rev_start_int   (TREE *tree, int    key) { return start_l(tree, key, true); }
+void *avl_rev_start_short (TREE *tree, short  key) { return start_l(tree, key, true); }
+void *avl_rev_start_schar (TREE *tree, SCHAR  key) { return start_l(tree, key, true); }
+void *avl_rev_start_ulong (TREE *tree, ULONG  key) { return start_l(tree, key, true); }
+void *avl_rev_start_uint  (TREE *tree, UINT   key) { return start_l(tree, key, true); }
+void *avl_rev_start_ushort(TREE *tree, USHORT key) { return start_l(tree, key, true); }
+void *avl_rev_start_uchar (TREE *tree, UCHAR  key) { return start_l(tree, key, true); }
+
+/*---------------------------------------------------------------------------*/
+
+void *avl_start_float(TREE *tree, float key)
+{
+   if (IS_X(tree)) return start_x_l(tree, &key,         false);
+   else            return start_l  (tree, flt2lng(key), false);
+}
+
+void *avl_start_double(TREE *tree, double key)
+{
+   if (IS_X(tree)) return start_x_l(tree, &key,         false);
+   else            return start_l  (tree, dbl2lng(key), false);
+}
+
+void *avl_rev_start_float(TREE *tree, float key)
+{
+   if (IS_X(tree)) return start_x_l(tree, &key,         true);
+   else            return start_l  (tree, flt2lng(key), true);
+}
+
+void *avl_rev_start_double(TREE *tree, double key)
+{
+   if (IS_X(tree)) return start_x_l(tree, &key,         true);
+   else            return start_l  (tree, dbl2lng(key), true);
+}
 
 /*---------------------------------------------------------------------------*/
 
 void *avl_next(TREE *tree)
 {
-   PATH  *path;
-   char  *pathright;
-   NODE **pathnode;
-   NODE  *node;
+   PATH   *path;
+   char   *pathright;
+   void  **pathnode;
+   X_NODE *x_node;
+   L_NODE *l_node;
 
    path = tree->path;
-   if ( !path) {
-      return NULL;
-   }
+   if ( !path) return NULL;
    pathright = path->pathright;
    pathnode  = path->pathnode;
-   node = (*pathnode)->right;
-   if (node) {
-      *++pathright = true;
-      *++pathnode  = node;
-      while ((node = node->left)) {
-         *++pathright = false;
-         *++pathnode  = node;
-      }
-   } else {
-      while (*pathright) {
+   if (IS_X(tree)) {
+      x_node = ((X_NODE *)*pathnode)->right;
+      if (x_node) {
+         x_node = PTR_OF(x_node);
+         *++pathright = true;
+         *++pathnode  = x_node;
+         while ((x_node = x_node->left)) {
+            x_node = PTR_OF(x_node);
+            *++pathright = false;
+            *++pathnode  = x_node;
+         }
+      } else {
+         while (*pathright) {
+            --pathright;
+            --pathnode;
+         }
          --pathright;
          --pathnode;
+         if ( !*pathnode) {
+            AVL_FREE_AND_NULL(tree->path);
+            return NULL;
+         }
       }
-      --pathright;
-      --pathnode;
-      if ( !*pathnode) {
-         FREE_PATH(path);
-         tree->path = NULL;
-         return NULL;
+      path->pathright = pathright;
+      path->pathnode  = pathnode;
+      return ((X_NODE *)*pathnode)->data;
+   } else {
+      l_node = ((L_NODE *)*pathnode)->right;
+      if (l_node) {
+         l_node = PTR_OF(l_node);
+         *++pathright = true;
+         *++pathnode  = l_node;
+         while ((l_node = l_node->left)) {
+            l_node = PTR_OF(l_node);
+            *++pathright = false;
+            *++pathnode  = l_node;
+         }
+      } else {
+         while (*pathright) {
+            --pathright;
+            --pathnode;
+         }
+         --pathright;
+         --pathnode;
+         if ( !*pathnode) {
+            AVL_FREE_AND_NULL(tree->path);
+            return NULL;
+         }
       }
+      path->pathright = pathright;
+      path->pathnode  = pathnode;
+      return ((L_NODE *)*pathnode)->data;
    }
-   path->pathright = pathright;
-   path->pathnode  = pathnode;
-   return (*pathnode)->data;
+   return NULL;
 }
 
 /*---------------------------------------------------------------------------*/
@@ -1616,39 +2800,68 @@ void *avl_prev(TREE *tree)
 {
    PATH  *path;
    char  *pathright;
-   NODE **pathnode;
-   NODE  *node;
+   void **pathnode;
+   X_NODE *x_node;
+   L_NODE *l_node;
 
    path = tree->path;
-   if ( !path) {
-      return NULL;
-   }
+   if ( !path) return NULL;
    pathright = path->pathright;
    pathnode  = path->pathnode;
-   node = (*pathnode)->left;
-   if (node) {
-      *++pathright = false;
-      *++pathnode  = node;
-      while ((node = node->right)) {
-         *++pathright = true;
-         *++pathnode  = node;
-      }
-   } else {
-      while ( !*pathright) {
+   if (IS_X(tree)) {
+      x_node = ((X_NODE *)*pathnode)->left;
+      if (x_node) {
+         x_node = PTR_OF(x_node);
+         *++pathright = false;
+         *++pathnode  = x_node;
+         while ((x_node = x_node->right)) {
+            x_node = PTR_OF(x_node);
+            *++pathright = true;
+            *++pathnode  = x_node;
+         }
+      } else {
+         while ( !*pathright) {
+            --pathright;
+            --pathnode;
+         }
          --pathright;
          --pathnode;
+         if ( !*pathnode) {
+            AVL_FREE_AND_NULL(tree->path);
+            return NULL;
+         }
       }
-      --pathright;
-      --pathnode;
-      if ( !*pathnode) {
-         FREE_PATH(path);
-         tree->path = NULL;
-         return NULL;
+      path->pathright = pathright;
+      path->pathnode  = pathnode;
+      return ((X_NODE *)*pathnode)->data;
+   } else {
+      l_node = ((L_NODE *)*pathnode)->left;
+      if (l_node) {
+         l_node = PTR_OF(l_node);
+         *++pathright = false;
+         *++pathnode  = l_node;
+         while ((l_node = l_node->right)) {
+            l_node = PTR_OF(l_node);
+            *++pathright = true;
+            *++pathnode  = l_node;
+         }
+      } else {
+         while ( !*pathright) {
+            --pathright;
+            --pathnode;
+         }
+         --pathright;
+         --pathnode;
+         if ( !*pathnode) {
+            AVL_FREE_AND_NULL(tree->path);
+            return NULL;
+         }
       }
+      path->pathright = pathright;
+      path->pathnode  = pathnode;
+      return ((L_NODE *)*pathnode)->data;
    }
-   path->pathright = pathright;
-   path->pathnode  = pathnode;
-   return (*pathnode)->data;
+   return NULL;
 }
 
 /*---------------------------------------------------------------------------*/
@@ -1656,8 +2869,7 @@ void *avl_prev(TREE *tree)
 void avl_stop(TREE *tree)
 {
    if (tree->path) {
-      FREE_PATH(tree->path);
-      tree->path = NULL;
+      AVL_FREE_AND_NULL(tree->path);
    }
 }
 
@@ -1670,34 +2882,59 @@ typedef struct {
 
 /*---------------------------------------------------------------------------*/
 
-static void link_subtree(NODE *node, LINK *link)
+static void link_x(X_NODE *x_node, LINK *link)
 {
-   if (node->right) link_subtree(node->right, link);
-   *(void **)((char *)node->data + link->offset) = link->data;
-   link->data = node->data;
-   if (node->left)  link_subtree(node->left, link);
+   if (x_node->right) link_x(PTR_OF(x_node->right), link);
+   *(void **)PTRADD(x_node->data, link->offset) = link->data;
+   link->data = x_node->data;
+   if (x_node->left)  link_x(PTR_OF(x_node->left),  link);
 }
 
 /*---------------------------------------------------------------------------*/
 
-static void backlink_subtree(NODE *node, LINK *link)
+static void link_l(L_NODE *l_node, LINK *link)
 {
-   if (node->left)  backlink_subtree(node->left, link);
-   *(void **)((char *)node->data + link->offset) = link->data;
-   link->data = node->data;
-   if (node->right) backlink_subtree(node->right, link);
+   if (l_node->right) link_l(PTR_OF(l_node->right), link);
+   *(void **)PTRADD(l_node->data, link->offset) = link->data;
+   link->data = l_node->data;
+   if (l_node->left)  link_l(PTR_OF(l_node->left),  link);
 }
 
 /*---------------------------------------------------------------------------*/
 
-void *avl_linked_list(TREE *tree, size_t ptroffs, bool back)
+static void rev_link_x(X_NODE *x_node, LINK *link)
+{
+   if (x_node->left)  rev_link_x(PTR_OF(x_node->left),  link);
+   *(void **)PTRADD(x_node->data, link->offset) = link->data;
+   link->data = x_node->data;
+   if (x_node->right) rev_link_x(PTR_OF(x_node->right), link);
+}
+
+/*---------------------------------------------------------------------------*/
+
+static void rev_link_l(L_NODE *l_node, LINK *link)
+{
+   if (l_node->left)  rev_link_l(PTR_OF(l_node->left),  link);
+   *(void **)PTRADD(l_node->data, link->offset) = link->data;
+   link->data = l_node->data;
+   if (l_node->right) rev_link_l(PTR_OF(l_node->right), link);
+}
+
+/*---------------------------------------------------------------------------*/
+
+void *avl_linked_list(TREE *tree, size_t ptroffs, bool rev)
 {
    LINK link;
    link.offset = ptroffs;
    link.data   = NULL;
    if (tree->root) {
-      if (back) backlink_subtree(tree->root, &link);
-      else      link_subtree    (tree->root, &link);
+      if (IS_X(tree)) {
+         if (rev) rev_link_x(tree->root, &link);
+         else     link_x    (tree->root, &link);
+      } else {
+         if (rev) rev_link_l(tree->root, &link);
+         else     link_l    (tree->root, &link);
+      }
    }
    return link.data;
 }
@@ -1711,35 +2948,85 @@ long avl_nodes(TREE *tree)
 
 /*===========================================================================*/
 
-static bool copy_subtree(NODE *newroot, NODE *root)
+static bool copy_x(TREE *newtree, X_NODE *x_newroot, X_NODE *x_root)
 {
-   newroot->key  = root->key;
-   newroot->data = root->data;
-   newroot->bal  = root->bal;
-
-   if (root->left) {
-      ALLOC_NODE(newroot->left);
-      if ( !newroot->left) {
+   x_newroot->data = x_root->data;
+   if (x_root->left) {
+      if (newtree->avail) {
+         x_newroot->left = --newtree->x_store;
+         newtree->avail--;
+      } else {
+         x_newroot->left = alloc_node_x(newtree);
+         if ( !x_newroot->left) return false;
+      }
+      if ( !copy_x(newtree, x_newroot->left, PTR_OF(x_root->left))) {
          return false;
       }
-      if ( !copy_subtree(newroot->left,  root->left)) {
-         FREE_NODE(newroot->left);
-         return false;
+      if (IS_DEEPER(x_root->left)) {
+         x_newroot->leftval |= DEEPER;
       }
    } else {
-      newroot->left = NULL;
+      x_newroot->left = NULL;
    }
-   if (root->right) {
-      ALLOC_NODE(newroot->right);
-      if ( !newroot->right) {
+   if (x_root->right) {
+      if (newtree->avail) {
+         x_newroot->right = --newtree->x_store;
+         newtree->avail--;
+      } else {
+         x_newroot->right = alloc_node_x(newtree);
+         if ( !x_newroot->right) return false;
+      }
+      if ( !copy_x(newtree, x_newroot->right, PTR_OF(x_root->right))) {
          return false;
       }
-      if ( !copy_subtree(newroot->right, root->right)) {
-         FREE_NODE(newroot->right);
-         return false;
+      if (IS_DEEPER(x_root->right)) {
+         x_newroot->rightval |= DEEPER;
       }
    } else {
-      newroot->right = NULL;
+      x_newroot->right = NULL;
+   }
+   return true;
+}
+
+/*---------------------------------------------------------------------------*/
+
+static bool copy_l(TREE *newtree, L_NODE *l_newroot, L_NODE *l_root)
+{
+   l_newroot->key  = l_root->key;
+   l_newroot->data = l_root->data;
+   if (l_root->left) {
+      if (newtree->avail) {
+         l_newroot->left = --newtree->l_store;
+         newtree->avail--;
+      } else {
+         l_newroot->left = alloc_node_l(newtree);
+         if ( !l_newroot->left) return false;
+      }
+      if ( !copy_l(newtree, l_newroot->left,  PTR_OF(l_root->left))) {
+         return false;
+      }
+      if (IS_DEEPER(l_root->left)) {
+         l_newroot->leftval |= DEEPER;
+      }
+   } else {
+      l_newroot->left = NULL;
+   }
+   if (l_root->right) {
+      if (newtree->avail) {
+         l_newroot->right = --newtree->l_store;
+         newtree->avail--;
+      } else {
+         l_newroot->right = alloc_node_l(newtree);
+         if ( !l_newroot->right) return false;
+      }
+      if ( !copy_l(newtree, l_newroot->right, PTR_OF(l_root->right))) {
+         return false;
+      }
+      if (IS_DEEPER(l_root->right)) {
+         l_newroot->rightval |= DEEPER;
+      }
+   } else {
+      l_newroot->right = NULL;
    }
    return true;
 }
@@ -1750,22 +3037,39 @@ TREE *avl_copy(TREE *tree)
 {
    TREE *newtree;
 
-   ALLOC_TREE(newtree);
-   if ( !newtree) {
-      return NULL;
-   }
-   newtree->keyinfo = tree->keyinfo;
-   newtree->keyoffs = tree->keyoffs;
+   newtree = AVL_MALLOC(sizeof(*newtree));
+   if ( !newtree) return NULL;
    newtree->usrcmp  = tree->usrcmp;
-   newtree->nodes   = tree->nodes;
    newtree->path    = NULL;
-
+   newtree->unused  = NULL;
+   newtree->store   = NULL;
+   newtree->nodes   = tree->nodes;
+   newtree->alloc   = 0;
+   newtree->avail   = 0;
+   newtree->keyoffs = tree->keyoffs;
+   newtree->bits    = tree->bits;
+   newtree->type    = tree->type;
    if (tree->root) {
-      ALLOC_NODE(newtree->root);
-      if ( !copy_subtree(newtree->root, tree->root)) {
-         FREE_NODE(newtree->root);
-         avl_close(newtree);
-         return NULL;
+      if (IS_X(tree)) {
+         newtree->x_root = alloc_node_x(newtree);
+         if ( !newtree->x_root) {
+            AVL_FREE(newtree);
+            return NULL;
+         }
+         if ( !copy_x(newtree, newtree->x_root, tree->x_root)) {
+            avl_free(newtree);
+            return NULL;
+         }
+      } else {
+         newtree->l_root = alloc_node_l(newtree);
+         if ( !newtree->l_root) {
+            AVL_FREE(newtree);
+            return NULL;
+         }
+         if ( !copy_l(newtree, newtree->l_root, tree->l_root)) {
+            avl_free(newtree);
+            return NULL;
+         }
       }
    } else {
       newtree->root = NULL;
@@ -1775,63 +3079,40 @@ TREE *avl_copy(TREE *tree)
 
 /*===========================================================================*/
 
-static void release_subtree(NODE *root, void (*callback)(void *))
+void avl_empty(TREE *tree)
 {
-   if (root->left)  release_subtree(root->left,  callback);
-   if (root->right) release_subtree(root->right, callback);
-   (*callback)(root->data);
-   FREE_NODE(root);
-}
+   void *alloc_base, *next_alloc_base;
 
-/*---------------------------------------------------------------------------*/
-
-static void reset_subtree(NODE *root)
-{
-   if (root->left)  reset_subtree(root->left);
-   if (root->right) reset_subtree(root->right);
-   FREE_NODE(root);
-}
-
-/*---------------------------------------------------------------------------*/
-
-void avl_release(TREE *tree, void (*callback)(void *))
-{
-   if (tree->root) {
-      release_subtree(tree->root, callback);
-   }
-   tree->root  = NULL;
-   tree->nodes = 0;
-   if (tree->path) {
-      FREE_PATH(tree->path);
-      tree->path = NULL;
+   if (tree->alloc) {
+      if (tree->path) {
+         AVL_FREE_AND_NULL(tree->path);
+      }
+      if (IS_X(tree)) {
+         alloc_base = PTRSUB(tree->x_store - tree->avail, SIZEOF_P);
+      } else {
+         alloc_base = PTRSUB(tree->l_store - tree->avail, SIZEOF_P_L);
+      }
+      while (alloc_base) {
+         next_alloc_base = *(void **)alloc_base;
+         free(alloc_base);
+         alloc_base = next_alloc_base;
+      }
+      tree->root   = NULL;
+      tree->unused = NULL;
+      tree->store  = NULL;
+      tree->nodes  = 0;
+      tree->avail  = 0;
+      tree->alloc  = 0;
    }
 }
 
 /*---------------------------------------------------------------------------*/
 
-void avl_reset(TREE *tree)
+void avl_free(TREE *tree)
 {
-   if (tree->root) {
-      reset_subtree(tree->root);
-   }
-   tree->root  = NULL;
-   tree->nodes = 0;
-   if (tree->path) {
-      FREE_PATH(tree->path);
-      tree->path = NULL;
-   }
+   avl_empty(tree);
+   tree->root = (void *)255;
+   AVL_FREE(tree);
 }
 
 /*---------------------------------------------------------------------------*/
-
-void avl_close(TREE *tree)
-{
-   if (tree->root) {
-      reset_subtree(tree->root);
-   }
-   if (tree->path) {
-     FREE_PATH(tree->path);
-   }
-   tree->keyinfo = (USHORT)-1;
-   FREE_TREE(tree);
-}

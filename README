@@ -1,21 +1,112 @@
 
-A simple but effective AVL tree library - v 2.0.0
+An AVL Trees Library in C - by Walter Tross - v 3.0.0
 
-WARNING:
-   a) sizeof(void *) == sizeof(long) is assumed
-   b) For threads, keep in mind that these functions use global variables:
-      avl_*tree*(), avl_insert(), avl_remove*(),
-      avl_release(), avl_reset(), avl_close(),
-      avl_start*(), avl_next(), avl_prev(), avl_stop().
+
+The following fictitious code is to give you an idea of what you
+can do with this library (look for the functions starting with avl_):
+
+>>>>>>>>>
+
+#include "avl.h"
+
+#define AVL_FOR(tree, p) for ((p) = avl_first(tree); (p); (p) = avl_next(tree))
+
+int student_cmp(STUDENT *s1, STUDENT *s2)
+{
+   int cmp = strcmp(s1->name, s2->name);
+   return cmp ? cmp : s1->id - s2->id;
+}
+
+void sum_vote_avg(STUDENT *student, float *p_vote_avg_sum)
+{
+   *p_vote_avg_sum += student->vote_avg;
+}
+
+int main(int argc, char *argv[])
+{
+   STUDENT *student, *other, *first_student_of_list, *donkey;
+
+   TREE *students_by_name_and_id = avl_tree_nodup    (student_cmp);
+   TREE *students_by_name        = avl_tree_dup_str  (STUDENT, name);
+   TREE *students_by_id          = avl_tree_nodup_int(STUDENT, id);
+   TREE *students_by_vote_avg    = avl_tree_dup_float(STUDENT, vote_avg);
+
+   while ((student = read_student())) {
+      avl_insert(students_by_name_and_id, student);
+      avl_insert(students_by_name,        student);
+      avl_insert(students_by_id,          student);
+      avl_insert(students_by_vote_avg,    student);
+   }
+   AVL_FOR(students_by_name, student) {
+      printf("%8d %s\n", student->id, student->name); // same name: in arrival order
+   }
+   int id = argc > 1 ? atoi(argv[1]) : 1;
+   student = avl_locate_int(students_by_id, id);
+   if (student) printf("vote avg of student %d: %f\n", id, student->vote_avg);
+
+   other = avl_locate_gt_float(students_by_vote_avg, student->vote_avg);
+   if (other) printf("first student with better vote avg: %d\n", other->id);
+
+   for (other = avl_start(students_by_name, "M"); other; other = avl_next(students_by_name)) {
+      printf("%s\n", other->name);
+   }
+   float vote_avg_sum = 0.0;
+   avl_do_w_ctx(students_by_vote_avg, sum_vote_avg, &vote_avg_sum);
+   printf("vote avg avg: %f\n", vote_avg_sum / avl_nodes(students_by_vote_avg));
+
+   first_student_of_list = avl_link(students_by_id, STUDENT, next);
+
+   donkey = avl_locate_first(students_by_vote_avg);
+   if (donkey) printf("student with lowest vote avg: %d\n", donkey->id);
+
+   TREE *students_before_donkey_removal = avl_copy(students_by_name_and_id);
+   avl_remove(students_by_name_and_id, donkey);
+   avl_remove_int(students_by_id, donkey->id);
+   avl_empty(students_by_name);
+   assert( !avl_nodes(students_by_name));
+   avl_free(students_by_vote_avg);
+   students_by_vote_avg = NULL;
+
+<<<<<<<<<
 
 For the time being, please read the comments in the .h file.
 A more comprehensive README will follow.
 
-The current version is optimized for lookup speed (under certain conditions), not for space.
-
 Please report any problems you may encounter to waltertross at gmail.
 
+This library requires <stdint.h> (which is not universally available) unless you
+#define AVL_UINTPTR_T as your replacement of uintptr_t (with sizeof(AVL_UINTPTR_T) == sizeof(void *))
+
+Thread safety: these functions call malloc/free (or AVL_MALLOC/AVL_FREE):
+ - avl[_string]_tree[...]()
+ - avl_insert()
+ - avl_remove[...]()
+ - avl_first(), avl_last()
+ - avl[_rev]_start[...]()
+ - avl_next(), avl_prev()
+ - avl_stop()
+ - avl_copy()
+ - avl_empty()
+ - avl_free()
+
 CHANGELOG (version numbers follow the "semantic versioning" convention):
+
+v 3.0.0:
+ - Removed sizeof(void *) == sizeof(long) constraint
+ - Removed global variables and improved memory management
+ - Compact nodes (3 pointers or 3 pointers and a long, depending on tree type)
+ - Fast strings (first sizeof(long) chars are compared in a single operation)
+ - Definable AVL_MALLOC and AVL_FREE (defaulting to malloc and free)
+ - Added float and double trees
+ - Renamed avl_backscan() -> avl_rev_scan()
+ - Renamed avl_[back]walk() -> avl[_rev]_scan_w_ctx()
+ - Added avl[_rev]_do[_w_ctx]()
+ - Renamed avl_backstart() -> avl_rev_start()
+ - Renamed avl_backlink() -> avl_rev_link()
+ - Removed avl_release()
+ - Renamed avl_reset() -> avl_empty() (which now frees node memory)
+ - Renamed avl_close() -> avl_free() (which now frees all memory)
+ - General overhaul
 
 v 2.0.0:
  - Removed function macros from avl.h except for avl_*_tree*() and avl_*link().
