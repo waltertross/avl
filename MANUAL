@@ -238,11 +238,16 @@ avl_remove[_TYPE]() on the same tree during a traversal with
 avl[_rev]_scan[_w_ctx]() or avl[_rev]_do[_w_ctx](), you put your program in
 an inconsistent state which is potentially harmful. Just don't do it.
 
-Another thing you should not do is alter or destroy the keys of the data
-items stored in a tree. As long as a data item is stored in a tree, only the
-parts of the data that do not contribute to the key can be altered.
-TEMPORARILY altering the key is possible, if it can be guaranteed that no
-avl_ function is called before the original key value is restored.
+
+MODIFYING THE ITEMS STORED IN A TREE
+
+You should never alter or destroy the keys of the data items stored in a tree.
+As long as a data item is stored in a tree, only the parts of the data that do
+not contribute to the key can be altered. Altering or destroying the keys IS
+possible, IF it can be guaranteed that no avl_[...]() function is called on
+the tree before the original key values are exactly restored (e.g., in the
+case of string keys, not only the content, but also the pointer to the string
+must be the same as when the item was first insterted in the tree).
 
 
 THREAD SAFETY
