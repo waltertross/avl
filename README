@@ -1,9 +1,11 @@
 
-An AVL Trees Library in C - by Walter Tross - v 3.0.0
+An AVL Trees Library in C - by Walter Tross
+
+Version 3.0.0
 
 
-The following fictitious code is to give you an idea of what you
-can do with this library (look for the functions starting with avl_):
+The following fictitious code should illustrate what you can do
+with this library (look for the functions whose name starts with avl_)
 
 >>>>>>>>>
 
@@ -54,9 +56,9 @@ int main(int argc, char *argv[])
    other = avl_locate_gt_float(students_by_vote_avg, student->vote_avg);
    if (other) printf("first student with better vote avg: %d\n", other->id);
 
-   for (other = avl_start(students_by_name, "M"); other;
-        other = avl_next (students_by_name)) {
-      printf("%s\n", other->name);
+   for (student = avl_start(students_by_name, "M"); student;
+        student = avl_next (students_by_name)) {
+      printf("%s\n", student->name);
    }
    float vote_avg_sum = 0.0;
    avl_do_w_ctx(students_by_vote_avg, sum_vote_avg, &vote_avg_sum);
@@ -77,26 +79,13 @@ int main(int argc, char *argv[])
 
 <<<<<<<<<
 
-For the time being, please read the comments in the .h file.
-A more comprehensive README will follow.
+
+The comments in the avl.h file are sufficient for most purposes.
+Further information is contained in the MANUAL file.
+
 
 Please report any problems you may encounter to waltertross at gmail.
 
-This library requires <stdint.h> (which is not universally available) unless you
-#define AVL_UINTPTR_T as your replacement of uintptr_t
-(with sizeof(AVL_UINTPTR_T) == sizeof(void *))
-
-Thread safety: these functions call malloc/free (or AVL_MALLOC/AVL_FREE):
- - avl[_string]_tree[...]()
- - avl_insert()
- - avl_remove[...]()
- - avl_first(), avl_last()
- - avl[_rev]_start[...]()
- - avl_next(), avl_prev()
- - avl_stop()
- - avl_copy()
- - avl_empty()
- - avl_free()
 
 CHANGELOG (version numbers follow the "semantic versioning" convention):
 

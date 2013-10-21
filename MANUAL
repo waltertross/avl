@@ -1,0 +1,268 @@
+
+An AVL Trees Library in C - by Walter Tross
+
+Version 3.0.0
+
+
+INTRODUCTION
+
+This manual is a linearized tree of information, that may go quite in
+depth explaining details you are not interested in right now.
+Just skip these subtrees ;-)
+
+You don't need to know how AVL trees work in order to use this library.
+You can use them as general-purpose containers that keep their items ordered
+and provide relatively fast access to them (not as fast as hash tables, but
+hash tables provide no sort order and are, in general, less easy to use).
+
+
+PORTABILITY
+
+This library has been thoroughly tested on a 32 bit and on a 64 bit Linux
+system with gcc, and it has been written so as to be as portable as possible.
+But, e.g., portability on ones' complement machines is not guaranteed.
+Machines with exotic type sizes (e.g., with 128-bit longs, with sizeof(float)
+== sizeof(double), or with CHAR_BIT > 8) SHOULD be supported, except for
+machines where elements of malloc'd arrays of void* may have odd addresses.
+If you need maximum portability, remember that <stdint.h> may still be
+unavailable on some system. Where this is the case, you should
+#define AVL_UINTPTR_T as your replacement of uintptr_t
+(with sizeof(AVL_UINTPTR_T) == sizeof(void *))
+
+
+MEMORY USAGE
+
+The TREE type (four uppercase characters like FILE) is an opaque pointer to
+a structure that currently uses 36 bytes on typical 32-bit systems, and
+64 bytes on 64-bit systems. Tree nodes are not visible from the API. They
+contain a pointer to the data item, which is returned, e.g., by avl_locate().
+Tree nodes with integer or string keys use 3 pointers and 1 long (normally
+16 bytes on 32-bit systems and 32 bytes on 64-bit systems), while tree nodes
+with pointer key types only use 3 pointers (normally 12 bytes on 32-bit
+systems and 24 bytes on 64-bit systems). If you wonder where the balancing
+information of AVL trees is stored: it's stored in the least significant bits
+of the node's left and right pointers (the deeper subtree has the bit set).
+If you wonder why string keys are treated like integer keys: to speed up
+string comparisons, the first sizeof(long) characters of a string key are
+stored in a long, so that they can be compared in a single operation.
+
+Tree nodes with float/double keys are of the integer type (by means of
+"type punning") if the floats/doubles use the IEEE 754 format and if
+sizeof(long) >= sizeof(float/double) (typically, on 32-bit machines, this
+holds only for floats, while on 64-bit machines it holds for doubles too).
+
+While nodes use the above detailed number of bytes, they are allocated in
+blocks of increasing size. Every block uses an extra pointer in order to form a
+linked list of blocks, that is used when avl_empty() or avl_free() are called.
+Nodes that have been removed and nodes resulting from failed insertion attempts
+still keep their place in the node blocks, but form a list of removed nodes.
+When a new node is needed, it is taken from the list of removed nodes if it's
+not empty. Otherwise, it is taken from the array of available nodes in the
+last allocated block. If this array is empty too, a new block is allocated and
+the node is taken from there. The number of nodes in the new block is calculated
+as follows. The number of currently allocated nodes is shifted right by
+AVL_NODE_INCREMENT_SHIFT and then 1 is added. If the resulting increment is
+greater than AVL_NODE_INCREMENT_MAX, it is set to AVL_NODE_INCREMENT_MAX.
+You can #define both of these parameters. Their default values are:
+AVL_NODE_INCREMENT_SHIFT: 2
+AVL_NODE_INCREMENT_MAX: 1048575 (i.e., 1 M - 1)
+By default there may be approximately up to an approximate 25% of unused nodes
+(25% == 1 / 2^AVL_NODE_INCREMENT_SHIFT), but not more than 1048574
+(1048574 == AVL_NODE_INCREMENT_MAX - 1).
+The default progression of allocation is: 1, 1, 2, 3, 4, 6, 9, 14, 21, 31, ...
+and the one of total nodes is: 0, 1, 2, 4, 7, 11, 17, 26, 40, 61, 92, ...
+
+The last memory chunk used by trees is the "path", which is all the information
+needed for traversing trees without callbacks. Since nodes have no parent
+pointer, the equivalent of the call stack of a normal traversal with callbacks
+has to be stored. This information represents the path from the tree's root to
+the current node. It typically uses 238 bytes on 32-bit systems and 844 bytes
+on 64-bit systems.
+
+The path is freed when a "callback-less" traversal reaches the end of the tree,
+or when avl_stop() is called. The node chunks are freed only when either
+avl_empty() or avl_free() are called. The TREE object is freed only when
+avl_free() is called.
+
+If you need to replace malloc() and free() by different functions, just
+#define AVL_MALLOC my_malloc_replacement
+#define AVL_FREE   my_free_replacement
+
+
+COMPACT LIST OF AVL FUNCTIONS AND MACROS
+
+>>> NODUP stands for one of: nodup  (without duplicates)
+                             dup    (with duplicates)
+
+TREE *avl_tree_NODUP(int (*usrcmp)());
+TREE *avl_tree_NODUP_mbr   (_struct, member, int (*usrcmp)());
+TREE *avl_tree_NODUP_ptr   (_struct, member, int (*usrcmp)());
+TREE *avl_tree_NODUP_chars (_struct, member);
+TREE *avl_tree_NODUP_str   (_struct, member);
+TREE *avl_tree_NODUP_long  (_struct, member);
+TREE *avl_tree_NODUP_int   (_struct, member);
+TREE *avl_tree_NODUP_short (_struct, member);
+TREE *avl_tree_NODUP_schar (_struct, member);
+TREE *avl_tree_NODUP_ulong (_struct, member);
+TREE *avl_tree_NODUP_uint  (_struct, member);
+TREE *avl_tree_NODUP_ushort(_struct, member);
+TREE *avl_tree_NODUP_uchar (_struct, member);
+TREE *avl_tree_NODUP_float (_struct, member);
+TREE *avl_tree_NODUP_double(_struct, member);
+
+TREE *avl_string_tree_NODUP();
+
+TREE *avl_tree(int treetype, size_t keyoffs, int (*usrcmp)());
+
+bool avl_has_fast_floats (void);
+bool avl_has_fast_doubles(void);
+
+bool avl_insert(TREE *tree, void *data);
+
+void *avl_remove       (TREE *tree, void *key);
+void *avl_remove_mbr   (TREE *tree, void *key);
+void *avl_remove_ptr   (TREE *tree, void *key);
+void *avl_remove_chars (TREE *tree, char *key);
+void *avl_remove_str   (TREE *tree, char *key);
+void *avl_remove_long  (TREE *tree, long           key);
+void *avl_remove_int   (TREE *tree, int            key);
+void *avl_remove_short (TREE *tree, short          key);
+void *avl_remove_schar (TREE *tree, signed char    key);
+void *avl_remove_ulong (TREE *tree, unsigned long  key);
+void *avl_remove_uint  (TREE *tree, unsigned int   key);
+void *avl_remove_ushort(TREE *tree, unsigned short key);
+void *avl_remove_uchar (TREE *tree, unsigned char  key);
+void *avl_remove_float (TREE *tree, float          key);
+void *avl_remove_double(TREE *tree, double         key);
+
+void *avl_locate       (TREE *tree, void *key);
+void *avl_locate_mbr   (TREE *tree, void *key);
+void *avl_locate_ptr   (TREE *tree, void *key);
+void *avl_locate_chars (TREE *tree, char *key);
+void *avl_locate_str   (TREE *tree, char *key);
+void *avl_locate_long  (TREE *tree, long           key);
+void *avl_locate_int   (TREE *tree, int            key);
+void *avl_locate_short (TREE *tree, short          key);
+void *avl_locate_schar (TREE *tree, signed char    key);
+void *avl_locate_ulong (TREE *tree, unsigned long  key);
+void *avl_locate_uint  (TREE *tree, unsigned int   key);
+void *avl_locate_ushort(TREE *tree, unsigned short key);
+void *avl_locate_uchar (TREE *tree, unsigned char  key);
+void *avl_locate_float (TREE *tree, float          key);
+void *avl_locate_double(TREE *tree, double         key);
+
+>>> XX stands for one of: ge  (greater equal)
+                          gt  (greater than)
+                          le  (less equal)
+                          lt  (less than)
+
+void *avl_locate_XX       (TREE *tree, void *key);
+void *avl_locate_XX_mbr   (TREE *tree, void *key);
+void *avl_locate_XX_ptr   (TREE *tree, void *key);
+void *avl_locate_XX_chars (TREE *tree, char *key);
+void *avl_locate_XX_str   (TREE *tree, char *key);
+void *avl_locate_XX_long  (TREE *tree, long           key);
+void *avl_locate_XX_int   (TREE *tree, int            key);
+void *avl_locate_XX_short (TREE *tree, short          key);
+void *avl_locate_XX_schar (TREE *tree, signed char    key);
+void *avl_locate_XX_ulong (TREE *tree, unsigned long  key);
+void *avl_locate_XX_uint  (TREE *tree, unsigned int   key);
+void *avl_locate_XX_ushort(TREE *tree, unsigned short key);
+void *avl_locate_XX_uchar (TREE *tree, unsigned char  key);
+void *avl_locate_XX_float (TREE *tree, float          key);
+void *avl_locate_XX_double(TREE *tree, double         key);
+
+void *avl_locate_first(TREE *tree);
+void *avl_locate_last (TREE *tree);
+
+>>> REV_ stands stands for one of: <empty string> (forward)
+                                   rev_           (reverse)
+
+void *avl_REV_scan      (TREE *tree, bool (*callback)());
+void *avl_REV_scan_w_ctx(TREE *tree, bool (*callback)(), void *context);
+
+void avl_REV_do      (TREE *tree, void (*callback)());
+void avl_REV_do_w_ctx(TREE *tree, void (*callback)(), void *context);
+
+void *avl_first(TREE *tree);
+void *avl_last (TREE *tree);
+
+void *avl_REV_start       (TREE *tree, void *key);
+void *avl_REV_start_mbr   (TREE *tree, void *key);
+void *avl_REV_start_ptr   (TREE *tree, void *key);
+void *avl_REV_start_chars (TREE *tree, char *key);
+void *avl_REV_start_str   (TREE *tree, char *key);
+void *avl_REV_start_long  (TREE *tree, long           key);
+void *avl_REV_start_int   (TREE *tree, int            key);
+void *avl_REV_start_short (TREE *tree, short          key);
+void *avl_REV_start_schar (TREE *tree, signed char    key);
+void *avl_REV_start_ulong (TREE *tree, unsigned long  key);
+void *avl_REV_start_uint  (TREE *tree, unsigned int   key);
+void *avl_REV_start_ushort(TREE *tree, unsigned short key);
+void *avl_REV_start_uchar (TREE *tree, unsigned char  key);
+void *avl_REV_start_float (TREE *tree, float          key);
+void *avl_REV_start_double(TREE *tree, double         key);
+
+void *avl_next(TREE *tree);
+void *avl_prev(TREE *tree);
+
+void avl_stop(TREE *tree);
+
+void *avl_REV_link(TREE *tree, _struct, next);
+void *avl_linked_list(TREE *tree, size_t ptroffs, bool rev);
+
+long avl_nodes(TREE *tree);
+
+TREE *avl_copy(TREE *tree);
+
+void avl_empty(TREE *tree);
+
+void avl_free(TREE *tree);
+
+
+EXPLANATION OF AVL FUNCTIONS AND MACROS
+
+This manual is not complete - sorry.
+For the time being you will have to refer to the avl.h file.
+The avl.h file really contains almost everything you need to know apart from
+the present contents of this MANUAL.
+
+
+MODIFYING TREES DURING TRAVERSAL
+
+As you can image, you can do damage if you modify a tree during traversal.
+If you do a "callback-less" traversal, e.g., with avl_first() and avl_next(),
+calling avl_insert() or avl_remove[_TYPE]() on the same tree will clear your
+"path", thus interrupting your traversal. But if you call avl_insert() or
+avl_remove[_TYPE]() on the same tree during a traversal with
+avl[_rev]_scan[_w_ctx]() or avl[_rev]_do[_w_ctx](), you put your program in
+an inconsistent state which is potentially harmful. Just don't do it.
+
+Another thing you should not do is alter or destroy the keys of the data
+items stored in a tree. As long as a data item is stored in a tree, only the
+parts of the data that do not contribute to the key can be altered.
+TEMPORARILY altering the key is possible, if it can be guaranteed that no
+avl_ function is called before the original key value is restored.
+
+
+THREAD SAFETY
+
+These functions call malloc/free (or AVL_MALLOC/AVL_FREE):
+ - avl[_string]_tree[...]()
+ - avl_insert()
+ - avl_remove[...]()
+ - avl_first(), avl_last()
+ - avl[_rev]_start[...]()
+ - avl_next(), avl_prev()
+ - avl_stop()
+ - avl_copy()
+ - avl_empty()
+ - avl_free()
+
+These functions, apart from the tree creation functions, are exactly the same
+functions that modify the state of a tree, and therefore may not be called
+while a tree is in use by another thread. In use, here, means that a call to an
+avl_[...]() function is active, or that a "callback-less" traversal is in
+progress. The other limitation to multithreading are only the obvious ones.
+E.g., concurrent use of avl[_rev]_scan[_w_ctx]() or avl[_rev]_do[_w_ctx]() is
+perfectly possible, as much as it is within the same thread.
