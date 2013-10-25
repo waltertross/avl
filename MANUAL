@@ -15,6 +15,8 @@ You can use them as general-purpose containers that keep their items ordered
 and provide relatively fast access to them (not as fast as hash tables, but
 hash tables provide no sort order and are, in general, less easy to use).
 
+If you have not read the example code in the README file, please do so now.
+
 
 PORTABILITY
 
@@ -64,13 +66,21 @@ as follows. The number of currently allocated nodes is shifted right by
 AVL_NODE_INCREMENT_SHIFT and then 1 is added. If the resulting increment is
 greater than AVL_NODE_INCREMENT_MAX, it is set to AVL_NODE_INCREMENT_MAX.
 You can #define both of these parameters. Their default values are:
-AVL_NODE_INCREMENT_SHIFT: 2
+AVL_NODE_INCREMENT_SHIFT: 1
 AVL_NODE_INCREMENT_MAX: 1048575 (i.e., 1 M - 1)
-By default there may be approximately up to an approximate 25% of unused nodes
-(25% == 1 / 2^AVL_NODE_INCREMENT_SHIFT), but not more than 1048574
-(1048574 == AVL_NODE_INCREMENT_MAX - 1).
+By default there may be approximately up to an approximate 50% of unused nodes,
+i.e., in the worst case only 2/3 of the memory allocated by a tree is used, but
+the number of unused nodes is by default not more than 1048574.
 The default progression of allocation is: 1, 1, 2, 3, 4, 6, 9, 14, 21, 31, ...
 and the one of total nodes is: 0, 1, 2, 4, 7, 11, 17, 26, 40, 61, 92, ...
+If, e.g., you
+#define AVL_NODE_INCREMENT_SHIFT 0
+You get this progression of allocation: 1, 2, 4, 8, 16, 32, 64, 128, 256, 512...
+and this one total nodes: 0, 1, 3, 7, 15, 31, 63, 127, 255, 511, 1023, ...
+If, on the other hand, you
+#define AVL_NODE_INCREMENT_SHIFT 2
+You get this progression of allocation: 1, 1, 1, 1, 2, 2, 3, 3, 4, 5, ...
+and this one total nodes: 0, 1, 2, 3, 4, 6, 8, 11, 14, 18, 23, ...
 
 The last memory chunk used by trees is the "path", which is all the information
 needed for traversing trees without callbacks. Since nodes have no parent
@@ -220,15 +230,375 @@ void avl_empty(TREE *tree);
 void avl_free(TREE *tree);
 
 
-EXPLANATION OF AVL FUNCTIONS AND MACROS
+TREES WITH OR WITHOUT DUPLICATES
 
-This manual is not complete - sorry.
-For the time being you will have to refer to the avl.h file.
-The avl.h file really contains almost everything you need to know apart from
-the present contents of this MANUAL.
+A peculiar property of this library is the ability to cleanly handle duplicates
+in AVL trees. Items are sorted by key value, and in trees without duplicates the
+insertion of an item with a key value that is already present is not possible.
+In trees with duplicates, items are inserted right after the last item that has
+the same key, if there is one. Items with the same key are ordered from first
+inserted to last inserted. In other words, items with the same key are stored
+in chronological order.
 
 
-MODIFYING TREES DURING TRAVERSAL
+TREE CREATION FUNCTIONS AND MACROS
+
+The only tree creation function is 
+TREE *avl_tree(int treetype, size_t keyoffs, int (*usrcmp)()),
+but you will more likely use one of the many helper macros that simplify its
+usage. The first argument is the treetype, i.e., the type of key, and whether
+the tree can contain duplicates or not. Possible key types are:
+
+constant   macros                                                    key type
+AVL_USR    avl_tree_[no]dup(int (*usrcmp)())                         void *
+AVL_MBR    avl_tree_[no]dup_mbr   (_struct, member, int (*usrcmp)()) void *
+AVL_PTR    avl_tree_[no]dup_ptr   (_struct, member, int (*usrcmp)()) void *
+AVL_CHARS  avl_tree_[no]dup_chars (_struct, member)                  char *
+AVL_STR    avl_tree_[no]dup_str   (_struct, member)                  char *
+AVL_LONG   avl_tree_[no]dup_long  (_struct, member)                  long
+AVL_INT    avl_tree_[no]dup_int   (_struct, member)                  int
+AVL_SHORT  avl_tree_[no]dup_short (_struct, member)                  short
+AVL_SCHAR  avl_tree_[no]dup_schar (_struct, member)           signed char
+AVL_ULONG  avl_tree_[no]dup_ulong (_struct, member)         unsigned long
+AVL_UINT   avl_tree_[no]dup_uint  (_struct, member)         unsigned int
+AVL_USHORT avl_tree_[no]dup_ushort(_struct, member)         unsigned short
+AVL_UCHAR  avl_tree_[no]dup_uchar (_struct, member)         unsigned char
+AVL_FLOAT  avl_tree_[no]dup_float (_struct, member)                  float
+AVL_DOUBLE avl_tree_[no]dup_double(_struct, member)                  double
+
+To get a tree with duplicates, the above constant must be ORed with AVL_DUP.
+ORing with AVL_NODUP is possible but not necessary, because AVL_NODUP is
+guaranteed to be 0. AVL_USR is guaranteed to be 0 as well.
+
+AVL_USR trees, which you normally create with avl_tree_nodup() or
+avl_tree_dup(), pass two item pointers to a user-defined compare function, in
+order to determine which of the two items, if any, is to follow the other in the
+sort order (i.e., which item is to be considered "greater" than the other).
+The compare function has to behave like strcmp(): it has to return a positive
+int if the first item is to be considered greater than the second, a negative
+int if the first < the second, or zero if the first == the second. You can
+remember this behavior as "first minus second". And in fact, as long as no
+integer overflow occurs, you can sometimes use a simple subtraction when
+the key or part of it is an integer. The library passes two void* pointers to
+the compare function, but the prototype does not mention this. This way you
+can declare your function as accepting two ITEM* pointers, where ITEM is your
+data struct, and unless you enable uncommon warnings in your compilation,
+you won't get any warning. But if you need portability to currently exotic
+systems where an ITEM* can be different from a void*, you need to define your
+compare function as accepting two void*, wich you can then assign to two ITEM*
+variables for the comparison.
+
+The macros for the other key types accept a struct and a member, which they
+use to calculate the offset of the key via the offsetof() macro in stddef.h.
+
+AVL_MBR trees (macros: avl_tree_[no]dup_mbr()) pass the address of the given
+struct member to the user-defined compare function. Of course, the struct
+member cannot be a bit field. It will normally be either a struct or a vector.
+
+AVL_PTR trees (macros: avl_tree_[no]dup_ptr()) pass the value of the given
+pointer member to the user-defined compare function. This pointer member is
+considered to be a void*. If your code must be compatible with exotic systems
+where a void* is not the same as an ITEM*, you cannot use this tree type
+(in this case you must use AVL_USR trees).
+
+AVL_CHARS trees (macros: avl_tree_[no]dup_chars()) use the address of the given
+struct member, which is an array of chars, AS IF it were passed to strcmp().
+This type of tree is uncommon, because strings are more frequently allocated
+separately (see the next type).
+
+AVL_STR trees (macros: avl_tree_[no]dup_str()) behave AS IF they passed the
+value of the given string pointer struct member (a char*) to strcmp().
+
+All other tree types (AVL_LONG etc., macros: avl_tree_[no]dup_long(), etc.)
+use the value of the given struct member, considered to be of the
+corresponding key type, for the comparisons. You can do "type punning" at
+your own risk, like, e.g., using a char[2] member as if it were an unsigned
+short (if you are sure of endianness and sizeof(unsigned short)).
+
+AVL_FLOAT and AVL_DOUBLE trees are not allowed to contain NaN (not a number)
+keys. Infinites, denorms, and -0.0 are allowed, though. The functions
+bool avl_has_fast_floats() and
+bool avl_has_fast_doubles() are only informative as to whether the library
+is able to store a copy of the key in the node (as a long value), or whether
+it must use a callback function for comparisons (which is slower).
+
+The most common situation is when you store items of struct type in a tree,
+but you can also have trees of basic types, like
+TREE *int_tree = avl_tree(AVL_INT, 0, NULL);
+or trees of arrays, like
+TREE *int_arr_tree = avl_tree(AVL_USR, 0, my_int_arr_cmp);
+For the case of char arrays, two macros for creating string trees are provided:
+avl_string_stree_[no]dup().
+String trees are AVL_CHARS trees with offset 0, but you don't need to know this.
+
+avl_tree() and all the tree creation macros return NULL only if the allocation
+of a tree structure failed (presumably because the system ran out of memory),
+if sizeof(void*) != sizeof(char*), if the key offset > USHORT_MAX, or if a
+comparison function was provided when it should not have been or vice versa.
+
+
+INSERTING DATA
+
+There is only one function for inserting data into a tree:
+bool avl_insert(TREE *tree, void *data).
+It returns true if the data was successfully inserted, false otherwise.
+Insertions can fail only because of the system being unable to acquire memory,
+because the maximum number of items in a tree (LONG_MAX+1) has been reached,
+or because the insertion of a duplicate key in a tree without duplicates
+was attempted. Of these, only the first is a true error condition.
+
+If you frequently attempt insertion of duplicate keys in trees without
+duplicates, you should try to first check for the presence of the key with
+avl_locate[...]() (see below), because a failed avl_insert() "costs" more
+(on average) than an avl_locate[...](). The extra check CAN make you gain speed.
+
+Insertions, successful or not, stop "callback-less" traversals (see below), and
+cause the "path" to be freed.
+
+
+REMOVING DATA
+
+Data is removed from a tree by means of one of the following functions:
+void *avl_remove       (TREE *tree, void *key);
+void *avl_remove_mbr   (TREE *tree, void *key);
+void *avl_remove_ptr   (TREE *tree, void *key);
+void *avl_remove_chars (TREE *tree, char *key);
+void *avl_remove_str   (TREE *tree, char *key);
+void *avl_remove_long  (TREE *tree, long           key);
+void *avl_remove_int   (TREE *tree, int            key);
+void *avl_remove_short (TREE *tree, short          key);
+void *avl_remove_schar (TREE *tree, signed char    key);
+void *avl_remove_ulong (TREE *tree, unsigned long  key);
+void *avl_remove_uint  (TREE *tree, unsigned int   key);
+void *avl_remove_ushort(TREE *tree, unsigned short key);
+void *avl_remove_uchar (TREE *tree, unsigned char  key);
+void *avl_remove_float (TREE *tree, float          key);
+void *avl_remove_double(TREE *tree, double         key);
+If the removal was successful, the data pointer is returned, otherwise NULL is
+returned. A removal can fail only if the key is not present in the tree.
+Like with avl_locate[_TYPE], you don't need to use exactly the same type as
+the tree. For instance, if your tree was created with avl_tree_[no]dup_str()
+or with avl_string_tree() (which technically is of type chars), you can
+avl_remove(my_tree, "my key value") instead of
+avl_remove_str(my_tree, "my key value") or
+avl_remove_chars(my_tree, "my key value").
+Similarly, it's ok to
+avl_remove_long(my_int_tree, my_long_value) or
+avl_remove_int(my_long_tree, my_int_value).
+In other words, as long as a key value "fits" a key argument, removal functions
+with pointer and integer keys are interchangeable.
+On the other hand, you MUST call
+avl_remove_float()  on a tree created with avl_tree_[no]dup_float() and
+avl_remove_double() on a tree created with avl_tree_[no]dup_double().
+
+Removal from a tree with duplicates always acts on the "oldest" matching item.
+Items with the same key are "first in, first out". In other words, they can be
+regarded as a queue.
+
+Removing a tree node does not free it's memory. The node is put on a list of
+available nodes. Only avl_empty() and avl_free() really free memory.
+
+Removals, successful or not, stop "callback-less" traversals (see below), and
+cause the "path" to be freed.
+
+
+LOCATING DATA
+
+The functions of the avl_locate[...]() group locate a data item that matches
+a condition involving a key value, and return its pointer to the caller, or
+NULL if no matching data item was found. The following functions return the
+data item whose key == the requested key according to the tree's sort order:
+void *avl_locate       (TREE *tree, void *key);
+void *avl_locate_mbr   (TREE *tree, void *key);
+void *avl_locate_ptr   (TREE *tree, void *key);
+void *avl_locate_chars (TREE *tree, char *key);
+void *avl_locate_str   (TREE *tree, char *key);
+void *avl_locate_long  (TREE *tree, long           key);
+void *avl_locate_int   (TREE *tree, int            key);
+void *avl_locate_short (TREE *tree, short          key);
+void *avl_locate_schar (TREE *tree, signed char    key);
+void *avl_locate_ulong (TREE *tree, unsigned long  key);
+void *avl_locate_uint  (TREE *tree, unsigned int   key);
+void *avl_locate_ushort(TREE *tree, unsigned short key);
+void *avl_locate_uchar (TREE *tree, unsigned char  key);
+void *avl_locate_float (TREE *tree, float          key);
+void *avl_locate_double(TREE *tree, double         key);
+Like with avl_remove[_TYPE], you don't need to use exactly the same type as
+the tree. For instance, if your tree was created with avl_tree_[no]dup_str()
+or with avl_string_tree() (which technically is of type chars), you can use
+my_item = avl_locate(my_tree, "my key value") instead of
+my_item = avl_locate_str(my_tree, "my key value") or
+my_item = avl_locate_chars(my_tree, "my key value").
+Similarly, it's ok to use
+my_item = avl_locate_long(my_int_tree, my_long_value) or
+my_item = avl_locate_int(my_long_tree, my_int_value).
+In other words, as long as a key value "fits" a key argument, avl_locate[...]()
+functions with pointer and integer keys are interchangeable.
+On the other hand, you MUST call
+avl_locate_float()  on a tree created with avl_tree_[no]dup_float() and
+avl_locate_double() on a tree created with avl_tree_[no]dup_double().
+
+The other possible conditions are:
+avl_locate_ge[_TYPE]() : "first" data item with key >= the requested key
+avl_locate_gt[_TYPE]() : "first" data item with key >  the requested key
+avl_locate_le[_TYPE]() : "first" data item with key <= the requested key
+avl_locate_lt[_TYPE]() : "first" data item with key <  the requested key
+Since there are 15 tree types and 4 conditions (5 with equality), there are a
+total of 60 functions (75 with equality).
+
+In the case of equality, only trees with duplicates can contain more than one
+item matching the condition. In this case, the "oldest" matching item is
+returned. If you imagine items lined up from left to right, this is the leftmost
+item.
+
+In the case of "greater equal" (ge) and "greater than" (gt) conditions, the
+leftmost item among the matching ones is returned (like in the equality case).
+
+In the case of "less equal" (le) and "less than" (lt) conditions, the
+rightmost item among the matching ones is returned. This means that, in the
+case of trees with duplicates, the last inserted item among the ones with the
+same key is returned. This also means that, if you know a key to be present
+in a tree with duplicates, you can locate the "youngest" item with this key with
+last_inserted = avl_locate_le[_TYPE](tree, key).
+
+The first and last item of a tree can be retrieved with
+void *avl_locate_first(TREE *tree) and
+void *avl_locate_last (TREE *tree).
+If the tree is empty, NULL is returned.
+In trees without duplicates, these functions simply return the item with the
+lowest and with the highest key value. In trees with duplicates, they return
+the "oldest" of all items with the lowest key value, and the "youngest" of all
+items with the highest key value. These are the same items returned by
+avl_first() / avl_last() (see later), but if these function calls are not
+followed by avl_next() / avl_prev(), you should call avl_locate_first() or
+avl_locate_last(), because they are faster and allocate no memory.
+
+
+TRAVERSING TREES WITH CALLBACK FUNCTIONS
+
+To pass all items of a tree, from first to last, to a callback function, use
+void avl_do(TREE *tree, void (*callback)()).
+
+The callback is passed a void*. Unless you want your code to be portable to
+exotic machines where a void* is really different from an ITEM* (where ITEM is
+your data type), you can declare your callback to accept an ITEM* parameter.
+Otherwise, just make it accept a void* that is immediately assigned to an ITEM*.
+The same applies to all parameters of the callback functions that follow.
+
+The same as avl_do(), but in reverse order, is accomplished by
+void avl_rev_do(TREE *tree, void (*callback)()).
+
+The same as avl[_rev]_do(), but with the pointer to some context data passed to
+the callback function (to which the same considerations about void* apply), is
+accomplished by
+void avl_do_w_ctx    (TREE *tree, void (*callback)()) and
+void avl_rev_do_w_ctx(TREE *tree, void (*callback)()),
+where callback is something like void callback(ITEM *data, CONTEXT *ctx) {...}
+With avl[_rev]_do_w_ctx() you can do (currently trendy) "reduce" operations.
+
+The same as avl[_rev]_do[_w_ctx](), but stopping on some condition before
+the end of the items is reached, and returning the item where the condition was
+met, is accomplished by
+void *avl_scan          (TREE *tree, bool (*callback)()),
+void *avl_rev_scan      (TREE *tree, bool (*callback)()),
+void *avl_scan_w_ctx    (TREE *tree, bool (*callback)()) and
+void *avl_rev_scan_w_ctx(TREE *tree, bool (*callback)()),
+where the callback accepts a void* (or an ITEM*) parameter in the first two
+cases, and two void* (or an ITEM* and a CONTEXT*) paramters in the _w_ctx cases.
+The callback should return true when the stop condition is met (e.g., when a
+stop item that satisfies a condition is found), and the functions will return
+the stop item. If the callback never returns true, the scan will continue to
+the end of the tree data.
+
+
+TRAVERSING TREES WITHOUT CALLBACK FUNCTIONS
+
+void *avl_first(TREE *tree)
+retrieves the first item of a tree, and, at the same time, allocates and
+initializes the "path", which represents the path from the tree's root to
+the current node and is needed for the whole duration of the traversal.
+This function should not be confused with avl_locate_first(), which does not
+allocate the "path", and cannot be used for starting a tree traversal.
+If the tree is empty, or if the "path" could not be allocated, avl_first()
+returns NULL.
+void *avl_last(TREE *tree)
+is of course like avl_first(), but starts from the last node of the tree.
+
+void *avl_next(TREE *tree) and
+void *avl_prev(TREE *tree)
+return the next and previous item in the tree, or NULL when there is no next or
+previous item. You can mix calls to avl_next() and avl_prev(), although,
+e.g., it makes no sense to call avl_prev() right after avl_first().
+
+A typical tree traversal looks like this:
+for (item = avl_first(tree); item; item = avl_next(tree)) { ... }, or
+for (item = avl_last (tree); item; item = avl_prev(tree)) { ... }.
+
+To start a traversal at the first node >= a given key, you can use one of
+void *avl_start       (TREE *tree, void *key);
+void *avl_start_mbr   (TREE *tree, void *key);
+void *avl_start_ptr   (TREE *tree, void *key);
+void *avl_start_chars (TREE *tree, char *key);
+void *avl_start_str   (TREE *tree, char *key);
+void *avl_start_long  (TREE *tree, long           key);
+void *avl_start_int   (TREE *tree, int            key);
+void *avl_start_short (TREE *tree, short          key);
+void *avl_start_schar (TREE *tree, signed char    key);
+void *avl_start_ulong (TREE *tree, unsigned long  key);
+void *avl_start_uint  (TREE *tree, unsigned int   key);
+void *avl_start_ushort(TREE *tree, unsigned short key);
+void *avl_start_uchar (TREE *tree, unsigned char  key);
+void *avl_start_float (TREE *tree, float          key);
+void *avl_start_double(TREE *tree, double         key);
+depending on your tree type. The same rules about equivalent functions apply as
+with avl_remove[_TYPE]() and avl_locate[_TYPE]() functions (q.v.). For instance,
+if you created your tree with avl_tree_[no]dup_str(), you can write
+item = avl_start(tree, "M") instead of
+item = avl_start_str(tree, "M").
+To start a traversal at the first node <= a given key, you can use the same
+functions, adding a _rev to the name, like
+void *avl_rev_start(TREE *tree, void *key)
+etc.
+The rules for determining the starting node are:
+for avl_start[_TYPE](), the same as for avl_locate_ge[_TYPE](), and
+for avl_rev_start[_TYPE](), the same as for avl_locate_le[_TYPE]().
+See the latter functions for further details, especially for the case of trees
+with duplicates.
+
+As soon as any of these tree traversal functions returns NULL, the traversal
+ends, and the "path" is deallocated.  If you want to deallocate the "path"
+before reaching the "natural" end of the traversal, you have to call
+void avl_stop(TREE *tree)
+E.g.:
+for (item = avl_first(tree); item; item = avl_next(tree)) {
+   if (found(item)) { avl_stop(); break; }
+}
+(but you would normally write this as item = avl_scan(tree, found))
+
+
+MAKING A LINKED LIST OUT OF THE ITEMS STORED IN A TREE
+
+Sometimes you want to use a tree as a sorting container, but then want to make
+a linked list out of the sorted items (and maybe throw away the tree).
+You can do so by calling one or both of these function-like macros:
+void *avl_link    (TREE *tree, _struct, next)
+void *avl_rev_link(TREE *tree, _struct, prev)
+The second argument is the struct of the items stored in the tree, the third
+argument is the struct member which is the pointer to the next (for avl_link)
+or to the previous (for avl_rev_link) struct in the list.
+The return value is the pointer to the first (for avl_link) or to the last
+(for avl_rev_link) item in the list, or NULL if the tree is empty.
+You get a doubly linked list by calling both macros.
+
+The function used by these macros, which may be needed in special cases, is
+void *avl_linked_list(TREE *tree, size_t ptroffs, bool rev).
+
+On very exotic systems, where sizeof(void *) != sizeof(_struct *), none of
+these functions and macros may be used. avl[_rev]_do_w_ctx() may be used instead
+(how to do it is a nice exercise if you are learning lists).
+
+
+CAVEAT: MODIFYING TREES DURING TRAVERSAL
 
 As you can image, you can do damage if you modify a tree during traversal.
 If you do a "callback-less" traversal, e.g., with avl_first() and avl_next(),
@@ -239,7 +609,7 @@ avl[_rev]_scan[_w_ctx]() or avl[_rev]_do[_w_ctx](), you put your program in
 an inconsistent state which is potentially harmful. Just don't do it.
 
 
-MODIFYING THE ITEMS STORED IN A TREE
+CAVEAT: MODIFYING THE ITEMS STORED IN A TREE
 
 You should never alter or destroy the keys of the data items stored in a tree.
 As long as a data item is stored in a tree, only the parts of the data that do
@@ -250,24 +620,57 @@ case of string keys, not only the content, but also the pointer to the string
 must be the same as when the item was first insterted in the tree).
 
 
+GETTING THE ITEM COUNT OF A TREE
+
+To get the number of items stored in a tree, use
+long avl_nodes(TREE *tree).
+If a negative number is returned, it means that the tree has reached its maximum
+capacity, which is LONG_MAX+1, and no more items can be inserted.
+
+
+COPYING A TREE
+
+You make a copy of a tree with
+TREE *avl_copy(TREE *tree).
+The copy will be perfectly balanced, because AVL trees have the nice property
+that they are perfectly balanced if items are inserted with ascending keys.
+The "path" of "callback-less" visits is not copied.
+
+
+EMPTYING A TREE AND RECLAIMING ALL TREE MEMORY
+
+void avl_empty(TREE *tree).
+releases all memory allocated by the tree after its creation to AVL_FREE, which
+defaults to free. The node count is reset to 0.
+
+void avl_free(TREE *tree)
+calls avl_empty(tree) and then also frees all remaining tree memory.
+The tree pointer cannot be used afterwards. You may want to set it to NULL as a
+safety precaution.
+
+
 THREAD SAFETY
 
-These functions call malloc/free (or AVL_MALLOC/AVL_FREE):
- - avl[_string]_tree[...]()
- - avl_insert()
- - avl_remove[...]()
- - avl_first(), avl_last()
- - avl[_rev]_start[...]()
- - avl_next(), avl_prev()
- - avl_stop()
- - avl_copy()
- - avl_empty()
- - avl_free()
+These functions modify the state of a tree:
+avl[_string]_tree[...]()
+avl_insert()
+avl_remove[...]()
+avl_first()
+avl_last()
+avl[_rev]_start[...]()
+avl_next()
+avl_prev()
+avl_stop()
+avl_copy()
+avl_empty()
+avl_free()
+All of these (and none of the others) call AVL_MALLOC and/or AVL_FREE
+(which default to malloc and free).
+These functions may not be called on a tree which is in use by another thread.
+In use, here, means that a call to an avl_[...]() function is active, or that
+a "callback-less" traversal is in progress.
 
-These functions, apart from the tree creation functions, are exactly the same
-functions that modify the state of a tree, and therefore may not be called
-while a tree is in use by another thread. In use, here, means that a call to an
-avl_[...]() function is active, or that a "callback-less" traversal is in
-progress. The other limitation to multithreading are only the obvious ones.
+The other limitations to multithreading are only the obvious ones.
 E.g., concurrent use of avl[_rev]_scan[_w_ctx]() or avl[_rev]_do[_w_ctx]() is
-perfectly possible, as much as it is within the same thread.
+perfectly possible, just like it is within the same thread.
+

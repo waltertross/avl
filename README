@@ -46,7 +46,7 @@ int main(int argc, char *argv[])
       avl_insert(students_by_id,          student);
       avl_insert(students_by_vote_avg,    student);
    }
-   AVL_FOR(students_by_name, student) { // duplicate names: in arrival order
+   AVL_FOR(students_by_name, student) { // duplicate names: in insertion order
       printf("%8d %s\n", student->id, student->name);
    }
    int id = argc > 1 ? atoi(argv[1]) : 1;
@@ -92,7 +92,7 @@ CHANGELOG (version numbers follow the "semantic versioning" convention):
 v 3.0.0:
  - Removed sizeof(void *) == sizeof(long) constraint
  - Removed global variables and improved memory management
- - Compact nodes (3 pointers or 3 pointers and a long, depending on tree type)
+ - Compact nodes (3 pointers or 3 pointers and 1 long, depending on tree type)
  - Fast strings (first sizeof(long) chars are compared in a single operation)
  - Definable AVL_MALLOC and AVL_FREE (defaulting to malloc and free)
  - Added float and double trees
@@ -110,8 +110,10 @@ v 2.0.0:
  - Removed function macros from avl.h except for avl_*_tree*() and avl_*link().
    This makes avl_locate_int() etc. necessary for integer keys.
    (This is also in preparation for sizeof(void*)!=sizeof(long).)
- - Changed avl_[back]scan() to return the data pointer when the callback returns true.
- - Added avl_[back]walk() (like avl_[back]scan(), but with a context pointer for the callback).
+ - Changed avl_[back]scan() to return the data pointer when the callback
+   returns true.
+ - Added avl_[back]walk() (like avl_[back]scan(), but with a context pointer
+   for the callback).
  - Renamed avl_f_link() to avl_linked_list().
 
 v 1.0.0:
