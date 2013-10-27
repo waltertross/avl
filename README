@@ -1,7 +1,7 @@
 
 An AVL Trees Library in C - by Walter Tross
 
-Version 3.0.0
+Version 3.0.1
 
 
 The following fictitious code should illustrate what you can do
@@ -88,6 +88,9 @@ Please report any problems you may encounter to waltertross at gmail.
 
 
 CHANGELOG (version numbers follow the "semantic versioning" convention):
+
+v 3.0.1:
+ - changed default AVL_NODE_INCREMENT_SHIFT from 2 to 1
 
 v 3.0.0:
  - Removed sizeof(void *) == sizeof(long) constraint
