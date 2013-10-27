@@ -86,6 +86,18 @@ static int depth_l(L_NODE *root, bool check)
 
 /*---------------------------------------------------------------------------*/
 
+int avl_depth(TREE *tree)
+{
+   if (tree->root) {
+      if (IS_X(tree)) return depth_x(tree->x_root, false);
+      else            return depth_l(tree->l_root, false);
+   } else {
+      return 0;
+   }
+}
+
+/*---------------------------------------------------------------------------*/
+
 void avl_check_balance(TREE *tree)
 {
    if (tree->root) {

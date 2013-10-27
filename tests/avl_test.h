@@ -35,6 +35,7 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 #include "../avl.h"
 
+int  avl_depth        (TREE *tree);
 void avl_check_balance(TREE *tree);
 
 void avl_dump      (TREE *tree, void (*callback)());
