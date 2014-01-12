@@ -16,7 +16,7 @@ with this library (look for the functions whose name starts with avl_)
 typedef struct student {
    int id;
    char *name;
-   float vote_avg;
+   float grade_avg;
    struct student *next_student;
 } STUDENT;
 
@@ -26,9 +26,9 @@ int student_cmp(STUDENT *s1, STUDENT *s2)
    return cmp ? cmp : s1->id - s2->id;
 }
 
-void sum_vote_avg(STUDENT *student, float *p_vote_avg_sum)
+void sum_grade_avg(STUDENT *student, float *p_grade_avg_sum)
 {
-   *p_vote_avg_sum += student->vote_avg;
+   *p_grade_avg_sum += student->grade_avg;
 }
 
 int main(int argc, char *argv[])
@@ -38,44 +38,45 @@ int main(int argc, char *argv[])
    TREE *students_by_name_and_id = avl_tree_nodup    (student_cmp);
    TREE *students_by_name        = avl_tree_dup_str  (STUDENT, name);
    TREE *students_by_id          = avl_tree_nodup_int(STUDENT, id);
-   TREE *students_by_vote_avg    = avl_tree_dup_float(STUDENT, vote_avg);
+   TREE *students_by_grade_avg   = avl_tree_dup_float(STUDENT, grade_avg);
 
    while ((student = read_student())) {
       avl_insert(students_by_name_and_id, student);
       avl_insert(students_by_name,        student);
       avl_insert(students_by_id,          student);
-      avl_insert(students_by_vote_avg,    student);
+      avl_insert(students_by_grade_avg,   student);
    }
    AVL_FOR(students_by_name, student) { // duplicate names: in insertion order
       printf("%8d %s\n", student->id, student->name);
    }
    int id = argc > 1 ? atoi(argv[1]) : 1;
    student = avl_locate_int(students_by_id, id);
-   if (student) printf("vote avg of student %d: %f\n", id, student->vote_avg);
+   if (student) printf("grade avg of student %d: %f\n", id, student->grade_avg);
 
-   other = avl_locate_gt_float(students_by_vote_avg, student->vote_avg);
-   if (other) printf("first student with better vote avg: %d\n", other->id);
+   other = avl_locate_gt_float(students_by_grade_avg, student->grade_avg);
+   if (other) printf("first student with better grade avg: %d\n", other->id);
 
    for (student = avl_start(students_by_name, "M"); student;
         student = avl_next (students_by_name)) {
       printf("%s\n", student->name);
    }
-   float vote_avg_sum = 0.0;
-   avl_do_w_ctx(students_by_vote_avg, sum_vote_avg, &vote_avg_sum);
-   printf("vote avg avg: %f\n", vote_avg_sum / avl_nodes(students_by_vote_avg));
+
+   float grade_avg_sum = 0.0;
+   avl_do_w_ctx(students_by_grade_avg, sum_grade_avg, &grade_avg_sum);
+   printf("overall: %f\n", grade_avg_sum / avl_nodes(students_by_grade_avg));
 
    first_student_of_list = avl_link(students_by_id, STUDENT, next_student);
 
-   donkey = avl_locate_first(students_by_vote_avg);
-   if (donkey) printf("student with lowest vote avg: %d\n", donkey->id);
+   donkey = avl_locate_first(students_by_grade_avg);
+   if (donkey) printf("student with lowest grade avg: %d\n", donkey->id);
 
    TREE *students_before_donkey_removal = avl_copy(students_by_name_and_id);
    avl_remove(students_by_name_and_id, donkey);
    avl_remove_int(students_by_id, donkey->id);
    avl_empty(students_by_name);
    assert( !avl_nodes(students_by_name));
-   avl_free(students_by_vote_avg);
-   students_by_vote_avg = NULL;
+   avl_free(students_by_grade_avg);
+   students_by_grade_avg = NULL;
 
 <<<<<<<<<
 
